@@ -1,0 +1,19 @@
+{
+  "name": "demaster-cron-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Backend chico (Express) con los endpoints que cron-job.org llama por horario: crear partidos nuevos, actualizar cuotas, marcador en vivo, y resolver partidos terminados (pagar diamantes). Pensado para desplegarse en Render, igual que el backend de la app del Mundial.",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  }
+}

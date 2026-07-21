@@ -1,0 +1,36 @@
+// Servidor chico (Express) con los 4 endpoints que cron-job.org llama por
+// horario. Cada uno exige el header X-Cron-Secret (ver src/middlewareAuth.js)
+// para que nadie más pueda dispararlos encontrando la URL.
+//
+// Despliegue: Render (Web Service, no "Static Site") — ver README.md para
+// los pasos exactos y cómo configurar cron-job.org.
+require('dotenv').config();
+const express = require('express');
+const { exigirSecreto } = require('./src/middlewareAuth');
+const { rutaCuotas } = require('./src/rutas/cuotas');
+const { rutaVivo } = require('./src/rutas/vivo');
+const { rutaResolver } = require('./src/rutas/resolver');
+const { rutaCrearPartidos } = require('./src/rutas/crearPartidos');
+
+const app = express();
+
+// Ping simple sin secreto, solo para confirmar que el server está arriba
+// (útil para probar el despliegue en Render antes de meter cron-job.org).
+app.get('/', (req, res) => res.json({ ok: true, servicio: 'demaster-cron-backend' }));
+
+app.get('/cuotas', exigirSecreto, rutaCuotas);
+app.post('/cuotas', exigirSecreto, rutaCuotas);
+
+app.get('/vivo', exigirSecreto, rutaVivo);
+app.post('/vivo', exigirSecreto, rutaVivo);
+
+app.get('/resolver', exigirSecreto, rutaResolver);
+app.post('/resolver', exigirSecreto, rutaResolver);
+
+app.get('/crear-partidos', exigirSecreto, rutaCrearPartidos);
+app.post('/crear-partidos', exigirSecreto, rutaCrearPartidos);
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`demaster-cron-backend escuchando en el puerto ${PORT}`);
+});
