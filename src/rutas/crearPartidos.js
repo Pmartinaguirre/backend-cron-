@@ -22,22 +22,8 @@ const { supabase } = require('../supabaseClient');
 const { obtenerFixturesDeLiga } = require('../apiFootball');
 const { esMismoEquipo } = require('../normalizar');
 const { subtituloFecha, tiempoCorto } = require('../utilFechas');
+const { LIGAS, TEMPORADA } = require('../ligas');
 
-// Mismos ids que usa vincular_fixtures.js, más Champions League (2) que no
-// estaba en ese mapa viejo. Mundial 2026 (id 1) queda afuera a propósito.
-const LIGAS = [
-  { competencia: 'Copa Libertadores', leagueId: 13 },
-  { competencia: 'Copa Sudamericana', leagueId: 11 },
-  { competencia: 'Primera División Argentina', leagueId: 128 },
-  { competencia: 'Serie A Italia', leagueId: 135 },
-  { competencia: 'LALIGA España', leagueId: 140 },
-  { competencia: 'Premier League Inglaterra', leagueId: 39 },
-  { competencia: 'Primera División Chile', leagueId: 265 },
-  { competencia: 'Ligue 1 Francia', leagueId: 61 },
-  { competencia: 'Champions League', leagueId: 2 },
-];
-
-const TEMPORADA = process.env.API_FOOTBALL_SEASON || '2026';
 // Cuántos días hacia adelante se buscan partidos nuevos. Con esto no hace
 // falta la lógica vieja de "activar la próxima fecha a mano": el cron solo
 // trae lo que ya está por jugarse pronto, y lo crea directo con

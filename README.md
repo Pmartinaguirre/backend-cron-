@@ -8,8 +8,9 @@ Backend chico (Node/Express) con los 4 endpoints que `cron-job.org` llama por ho
 - **`/vivo`** — cada 1 minuto, actualiza minuto de juego, marcador parcial y goleadores de los partidos que ya arrancaron. Solo lectura/display, no paga nada.
 - **`/resolver`** — cada 5-15 min, detecta partidos que ya terminaron (estado FT en API-Football) y paga diamantes a los jugadores (misma lógica que los botones "Pagar" del Admin).
 - **`/crear-partidos`** — trae partidos nuevos de cada liga (excepto Mundial 2026, que se cargó completo a mano) dentro de los próximos `DIAS_ANTICIPACION` días (default 10). Solo trae partidos donde ambos equipos están en la lista Tier A de esa competencia (tabla `equipos_tier_a_mvp`), EXCEPTO en instancias finales (octavos/round of 16 en adelante), donde trae todos los partidos de esa fase sin filtrar. De cada lote nuevo, ~25% sale al azar en Categoría 4 (el resto, Categoría 5). No duplica: se salta los partidos que ya existen por `fixture_id_api`.
+- **`/equipos?competencia=<nombre>`** — de solo lectura: devuelve la lista real de equipos de esa competencia, tal como los tiene API-Football (mismo texto exacto que usa `/crear-partidos`). La usa el selector "Equipos Tier A" del Admin en el frontend, para que el nombre elegido SIEMPRE calce con el que trae el cron (antes el admin tipeaba el nombre a mano o lo elegía de partidos ya cargados, y nombres como "U. Catolica" no calzaban con "Universidad Catolica" de la API). No aplica a Mundial 2026 (no tiene id de liga configurado, queda fuera del automatismo).
 
-Todos exigen el header `X-Cron-Secret` con el valor de tu `CRON_SECRET` (ver abajo) — sin eso, responden 401.
+Todos exigen el header `X-Cron-Secret` con el valor de tu `CRON_SECRET` (ver abajo) — sin eso, responden 401 — EXCEPTO `/equipos`, que es de solo lectura y la llama directo el navegador del Admin (pedirle el secreto obligaría a exponerlo en el código del frontend).
 
 ## 1. Antes de desplegar: correr la migración SQL
 
@@ -70,3 +71,5 @@ Cada uno devuelve un JSON con lo que hizo (`revisados`, `actualizados`, `resuelt
 ## Antes de activar /crear-partidos: configura Tier A
 
 Para que `/crear-partidos` traiga partidos de temporada regular en una competencia, esa competencia necesita al menos un equipo cargado en "Equipos Tier A" (panel Admin de la app). Si una competencia no tiene ningún equipo Tier A configurado, `/crear-partidos` NO trae nada de su temporada regular (para evitar traer la liga completa por accidente si te olvidaste de configurarla) — sí sigue trayendo instancias finales igual, porque esas no dependen de Tier A.
+
+Desde este cambio, el panel "Equipos Tier A" del Admin trae el listado de equipos directo de `/equipos` (este backend) en vez de basarse en partidos ya cargados o en texto tipeado a mano — asegurate de que la URL del backend en `sementomvp.jsx` (`https://backend-cron-qqwt.onrender.com`) sea la correcta antes de usarlo, y que el servicio esté desplegado (si Render lo tiene dormido, el primer fetch puede tardar unos segundos).

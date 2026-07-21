@@ -11,6 +11,7 @@ const { rutaCuotas } = require('./src/rutas/cuotas');
 const { rutaVivo } = require('./src/rutas/vivo');
 const { rutaResolver } = require('./src/rutas/resolver');
 const { rutaCrearPartidos } = require('./src/rutas/crearPartidos');
+const { rutaEquipos } = require('./src/rutas/equipos');
 
 const app = express();
 
@@ -29,6 +30,16 @@ app.post('/resolver', exigirSecreto, rutaResolver);
 
 app.get('/crear-partidos', exigirSecreto, rutaCrearPartidos);
 app.post('/crear-partidos', exigirSecreto, rutaCrearPartidos);
+
+// /equipos NO lleva exigirSecreto: es de solo lectura y la llama directo el
+// navegador del Admin (ver nota en src/rutas/equipos.js). Como el frontend
+// (Netlify) y este backend (Render) son orígenes distintos, hace falta CORS
+// acá — solo para esta ruta, no para todo el servidor, ya que las demás
+// rutas las llama cron-job.org (no un navegador) y no lo necesitan.
+app.get('/equipos', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  next();
+}, rutaEquipos);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

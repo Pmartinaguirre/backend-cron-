@@ -85,4 +85,12 @@ async function obtenerFixturesDeLiga(leagueId, season) {
   return data?.response || [];
 }
 
-module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerFixturesDeLiga };
+// ---------- Equipos de una liga (usado por /equipos, para el selector Tier A del Admin) ----------
+async function obtenerEquiposDeLiga(leagueId, season) {
+  const resp = await fetch(`${BASE}/teams?league=${leagueId}&season=${season}`, { headers });
+  const data = await resp.json();
+  const equipos = (data?.response || []).map((r) => r.team?.name).filter(Boolean);
+  return equipos.sort((a, b) => a.localeCompare(b, 'es'));
+}
+
+module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerFixturesDeLiga, obtenerEquiposDeLiga };
