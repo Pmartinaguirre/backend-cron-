@@ -78,4 +78,11 @@ async function obtenerEstadoFixture(fixtureId) {
   };
 }
 
-module.exports = { obtenerCuotas, obtenerEstadoFixture };
+// ---------- Fixtures de una liga completa (usado por /crear-partidos) ----------
+async function obtenerFixturesDeLiga(leagueId, season) {
+  const resp = await fetch(`${BASE}/fixtures?league=${leagueId}&season=${season}`, { headers });
+  const data = await resp.json();
+  return data?.response || [];
+}
+
+module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerFixturesDeLiga };

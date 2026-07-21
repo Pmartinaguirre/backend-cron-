@@ -7,7 +7,7 @@ Backend chico (Node/Express) con los 4 endpoints que `cron-job.org` llama por ho
 - **`/cuotas`** — busca partidos Cat.4/5 activos sin cuota guardada y les pide la cuota "Match Winner" a API-Football. Igual que `actualizar_cuotas.js`, pero como endpoint HTTP. Idempotente: correr cada 30-60 min alcanza.
 - **`/vivo`** — cada 1 minuto, actualiza minuto de juego, marcador parcial y goleadores de los partidos que ya arrancaron. Solo lectura/display, no paga nada.
 - **`/resolver`** — cada 5-15 min, detecta partidos que ya terminaron (estado FT en API-Football) y paga diamantes a los jugadores (misma lógica que los botones "Pagar" del Admin).
-- **`/crear-partidos`** — todavía sin implementar del todo. Falta que me mandes los criterios (qué ligas, cuántas fechas por adelantado, etc.) para completar la lógica de creación automática.
+- **`/crear-partidos`** — trae partidos nuevos de cada liga (excepto Mundial 2026, que se cargó completo a mano) dentro de los próximos `DIAS_ANTICIPACION` días (default 10). Solo trae partidos donde ambos equipos están en la lista Tier A de esa competencia (tabla `equipos_tier_a_mvp`), EXCEPTO en instancias finales (octavos/round of 16 en adelante), donde trae todos los partidos de esa fase sin filtrar. De cada lote nuevo, ~25% sale al azar en Categoría 4 (el resto, Categoría 5). No duplica: se salta los partidos que ya existen por `fixture_id_api`.
 
 Todos exigen el header `X-Cron-Secret` con el valor de tu `CRON_SECRET` (ver abajo) — sin eso, responden 401.
 
@@ -28,6 +28,8 @@ En el editor SQL de Supabase, corre `../agregar_columnas_en_vivo.sql` (agrega la
    - `SUPABASE_SERVICE_KEY` (la *service_role*, no la anon)
    - `API_FOOTBALL_KEY`
    - `CRON_SECRET` (invéntate algo largo y random, ej. con `openssl rand -hex 32`)
+   - `DIAS_ANTICIPACION` (opcional, default 10) — cuántos días hacia adelante busca partidos nuevos `/crear-partidos`.
+   - `API_FOOTBALL_SEASON` (opcional, default 2026) — temporada que se consulta en API-Football.
 4. Deploy. Cuando termine, Render te da una URL tipo `https://demaster-cron-backend.onrender.com`. Probá que responda: `https://demaster-cron-backend.onrender.com/` debería devolver `{"ok":true,...}` sin necesitar el secreto.
 
 **Nota sobre el plan gratis de Render:** si el servicio se "duerme" por inactividad, la primera llamada después de dormido puede tardar 30-60 segundos en responder (arranca el contenedor). Para un cron de 1 minuto (`/vivo`) esto puede ser un problema — si te pasa, conviene el plan pago más barato de Render (no se duerme) o agregar un 5º cron en cron-job.org que solo pegue a `/` cada 10 minutos para mantenerlo despierto.
@@ -41,7 +43,7 @@ Crea 3 (o 4, cuando esté `/crear-partidos`) cron jobs nuevos, uno por endpoint:
 | `/vivo` | Cada 1 minuto | GET |
 | `/resolver` | Cada 5-15 minutos | GET |
 | `/cuotas` | Cada 30-60 minutos | GET |
-| `/crear-partidos` | Cada 6-12 horas (cuando esté listo) | GET |
+| `/crear-partidos` | Cada 6-12 horas | GET |
 
 En cada cron job de cron-job.org, en la sección de headers personalizados (Advanced / Headers), agrega:
 
@@ -65,6 +67,6 @@ Cada uno devuelve un JSON con lo que hizo (`revisados`, `actualizados`, `resuelt
 
 `src/diamantes.js` es una copia a mano de la misma lógica que vive en `sementomvp.jsx` (frontend). Si el día de mañana ajustas la fórmula de diamantes ahí (como pasó con el rango 5-12), hay que copiar el mismo cambio acá también — si no, el Admin (manual) y este backend (automático) van a pagar distinto por el mismo resultado.
 
-## Pendiente
+## Antes de activar /crear-partidos: configura Tier A
 
-`/crear-partidos` está sin implementar — en cuanto me mandes los criterios (qué ligas, cuántas fechas por adelantado activar, etc.) lo completo.
+Para que `/crear-partidos` traiga partidos de temporada regular en una competencia, esa competencia necesita al menos un equipo cargado en "Equipos Tier A" (panel Admin de la app). Si una competencia no tiene ningún equipo Tier A configurado, `/crear-partidos` NO trae nada de su temporada regular (para evitar traer la liga completa por accidente si te olvidaste de configurarla) — sí sigue trayendo instancias finales igual, porque esas no dependen de Tier A.
