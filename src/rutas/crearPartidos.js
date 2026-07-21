@@ -75,7 +75,16 @@ async function rutaCrearPartidos(req, res) {
 
   for (const { competencia, leagueId } of LIGAS) {
     const listaTierA = tierAPorCompetencia[competencia] || [];
-    const resumenLiga = { revisados: 0, creados: 0, saltadosPorTierA: 0 };
+    // saltadosPorYaExistente / saltadosPorEquiposSinDefinir son solo para
+    // diagnóstico (por qué un partido "revisado" no terminó ni creado ni
+    // saltado por Tier A) — ninguno de los dos bloquea nada, son informativos.
+    const resumenLiga = {
+      revisados: 0,
+      creados: 0,
+      saltadosPorTierA: 0,
+      saltadosPorYaExistente: 0,
+      saltadosPorEquiposSinDefinir: 0,
+    };
 
     try {
       const fixtures = await obtenerFixturesDeLiga(leagueId, TEMPORADA);
@@ -101,14 +110,31 @@ async function rutaCrearPartidos(req, res) {
       if (errExistentes) throw errExistentes;
       const idsYaExistentes = new Set((yaExistentes || []).map((d) => d.fixture_id_api));
 
+      // Diagnóstico: nombres de ronda tal cual los devuelve API-Football
+      // para esta liga en este lote — sirve para confirmar si el texto real
+      // calza con KEYWORDS_KNOCKOUT (ej. "Round of 16" vs "Octavos de
+      // Final") sin tener que adivinar.
+      resumenLiga.rondasVistas = Array.from(new Set(candidatos.map((fx) => fx.league?.round).filter(Boolean)));
+
       const filasNuevas = [];
       for (const fx of candidatos) {
-        if (idsYaExistentes.has(fx.fixture.id)) continue;
+        if (idsYaExistentes.has(fx.fixture.id)) {
+          resumenLiga.saltadosPorYaExistente++;
+          continue;
+        }
 
         const nombreRonda = fx.league?.round || '';
         const equipoLocal = fx.teams?.home?.name;
         const equipoVisita = fx.teams?.away?.name;
-        if (!equipoLocal || !equipoVisita) continue;
+        // En fases eliminatorias sorteadas por resultado (ej. definir rival
+        // de Round of 16 según quién gane la fase anterior), API-Football a
+        // veces todavía no tiene los dos equipos confirmados — el fixture
+        // existe (con fecha) pero sin nombre de equipo. Ahí no hay nada que
+        // crear todavía; se vuelve a intentar solo en la próxima corrida.
+        if (!equipoLocal || !equipoVisita) {
+          resumenLiga.saltadosPorEquiposSinDefinir++;
+          continue;
+        }
 
         const esFinal = esInstanciaFinal(nombreRonda);
         if (!esFinal) {
