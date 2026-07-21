@@ -42,7 +42,7 @@ const TEMPORADA = process.env.API_FOOTBALL_SEASON || '2026';
 // falta la lógica vieja de "activar la próxima fecha a mano": el cron solo
 // trae lo que ya está por jugarse pronto, y lo crea directo con
 // esta_activo = true.
-const DIAS_ANTICIPACION = Number(process.env.DIAS_ANTICIPACION) || 30;
+const DIAS_ANTICIPACION = Number(process.env.DIAS_ANTICIPACION) || 60;
 const PROBABILIDAD_CAT4 = 0.25;
 
 // Nombres de fase de API-Football que cuentan como "instancia final" — si
