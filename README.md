@@ -10,11 +10,15 @@ Backend chico (Node/Express) con los 4 endpoints que `cron-job.org` llama por ho
 - **`/crear-partidos`** — trae partidos nuevos de cada liga (excepto Mundial 2026, que se cargó completo a mano) dentro de los próximos `DIAS_ANTICIPACION` días (default 10). Solo trae partidos donde ambos equipos están en la lista Tier A de esa competencia (tabla `equipos_tier_a_mvp`), EXCEPTO en instancias finales (octavos/round of 16 en adelante), donde trae todos los partidos de esa fase sin filtrar. De cada lote nuevo, ~25% sale al azar en Categoría 4 (el resto, Categoría 5). No duplica: se salta los partidos que ya existen por `fixture_id_api`.
 - **`/equipos?competencia=<nombre>`** — de solo lectura: devuelve la lista real de equipos de esa competencia, tal como los tiene API-Football (mismo texto exacto que usa `/crear-partidos`). La usa el selector "Equipos Tier A" del Admin en el frontend, para que el nombre elegido SIEMPRE calce con el que trae el cron (antes el admin tipeaba el nombre a mano o lo elegía de partidos ya cargados, y nombres como "U. Catolica" no calzaban con "Universidad Catolica" de la API). No aplica a Mundial 2026 (no tiene id de liga configurado, queda fuera del automatismo).
 
-Todos exigen el header `X-Cron-Secret` con el valor de tu `CRON_SECRET` (ver abajo) — sin eso, responden 401 — EXCEPTO `/equipos`, que es de solo lectura y la llama directo el navegador del Admin (pedirle el secreto obligaría a exponerlo en el código del frontend).
+- **`/invitar-a-grupo`** (POST) — invita a un amigo a un grupo (sala privada). Body: `{ salaId, email, invitadorId }`. Verifica que `invitadorId` sea el admin de esa sala. Si el mail ya es de un jugador registrado, lo agrega directo como miembro; si no, manda la invitación nativa de Supabase (mismo Resend ya configurado en Auth) y guarda una fila pendiente que se vincula sola cuando esa persona termine de registrarse (ver Registro.jsx).
+
+Todos exigen el header `X-Cron-Secret` con el valor de tu `CRON_SECRET` (ver abajo) — sin eso, responden 401 — EXCEPTO `/equipos` e `/invitar-a-grupo`, que los llama directo el navegador del jugador (pedirles el secreto obligaría a exponerlo en el código del frontend); `/invitar-a-grupo` verifica la autorización de otra forma (ver arriba).
 
 ## 1. Antes de desplegar: correr la migración SQL
 
-En el editor SQL de Supabase, corre `../agregar_columnas_en_vivo.sql` (agrega las columnas de marcador en vivo que usa `/vivo`). Si todavía no lo hiciste, también corre `../agregar_columna_perfil_completo.sql` y `../agregar_columna_email.sql` de sesiones anteriores.
+En el editor SQL de Supabase, corre `../agregar_columnas_en_vivo.sql` (agrega las columnas de marcador en vivo que usa `/vivo`) y `../agregar_invitacion_email_grupos.sql` (agrega `email_invitado` a `salas_privadas_miembros_mvp`, para invitar por mail a amigos que todavía no tienen cuenta — lo usa `/invitar-a-grupo`). Si todavía no lo hiciste, también corre `../agregar_columna_perfil_completo.sql` y `../agregar_columna_email.sql` de sesiones anteriores.
+
+También revisá en Supabase → Authentication → Email Templates la plantilla **"Invite user"** — es la que se manda cuando invitás a alguien sin cuenta desde `/invitar-a-grupo` (separada de la de "Confirm signup"), para que tenga un diseño/texto decente.
 
 ## 2. Desplegar en Render
 
@@ -31,6 +35,7 @@ En el editor SQL de Supabase, corre `../agregar_columnas_en_vivo.sql` (agrega la
    - `CRON_SECRET` (invéntate algo largo y random, ej. con `openssl rand -hex 32`)
    - `DIAS_ANTICIPACION` (opcional, default 10) — cuántos días hacia adelante busca partidos nuevos `/crear-partidos`.
    - `API_FOOTBALL_SEASON` (opcional, default 2026) — temporada que se consulta en API-Football.
+   - `FRONTEND_URL` (opcional, default `https://demaster.app`) — a dónde manda Supabase al amigo invitado por `/invitar-a-grupo` para que complete su registro.
 4. Deploy. Cuando termine, Render te da una URL tipo `https://demaster-cron-backend.onrender.com`. Probá que responda: `https://demaster-cron-backend.onrender.com/` debería devolver `{"ok":true,...}` sin necesitar el secreto.
 
 **Nota sobre el plan gratis de Render:** si el servicio se "duerme" por inactividad, la primera llamada después de dormido puede tardar 30-60 segundos en responder (arranca el contenedor). Para un cron de 1 minuto (`/vivo`) esto puede ser un problema — si te pasa, conviene el plan pago más barato de Render (no se duerme) o agregar un 5º cron en cron-job.org que solo pegue a `/` cada 10 minutos para mantenerlo despierto.
