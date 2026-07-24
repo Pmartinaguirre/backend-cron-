@@ -13,6 +13,7 @@ const { rutaResolver } = require('./src/rutas/resolver');
 const { rutaCrearPartidos } = require('./src/rutas/crearPartidos');
 const { rutaEquipos } = require('./src/rutas/equipos');
 const { rutaInvitarAGrupo } = require('./src/rutas/invitarAGrupo');
+const { rutaEnviarResumenMesa } = require('./src/rutas/enviarResumenMesa');
 
 const app = express();
 // Necesario para leer req.body en /invitar-a-grupo (POST con JSON) — las
@@ -60,6 +61,13 @@ const permitirCorsInvitar = (req, res, next) => {
 };
 app.options('/invitar-a-grupo', permitirCorsInvitar, (req, res) => res.sendStatus(204));
 app.post('/invitar-a-grupo', permitirCorsInvitar, rutaInvitarAGrupo);
+
+// /enviar-resumen-mesa: mismo criterio que /invitar-a-grupo — lo llama
+// directo el navegador del admin desde Check.jsx al cerrar la mesa, sin
+// X-Cron-Secret (la autorización real pasa dentro de la ruta, verificando
+// que adminId sea el admin de la mesa o de su sala).
+app.options('/enviar-resumen-mesa', permitirCorsInvitar, (req, res) => res.sendStatus(204));
+app.post('/enviar-resumen-mesa', permitirCorsInvitar, rutaEnviarResumenMesa);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
