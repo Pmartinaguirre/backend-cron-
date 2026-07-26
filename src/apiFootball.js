@@ -48,29 +48,66 @@ async function obtenerEstadoFixture(fixtureId) {
   const fixture = data?.response?.[0];
   if (!fixture) return null;
 
-  const estado = fixture.fixture?.status?.short || null; // NS, 1H, HT, 2H, FT, etc.
+  const estado = fixture.fixture?.status?.short || null; // NS, 1H, HT, 2H, FT, PST, etc.
   const minuto = fixture.fixture?.status?.elapsed ?? null;
+  // Fecha del fixture según la API. Importa para los partidos POSTERGADOS:
+  // API-Football mantiene el mismo fixture id y le cambia la fecha a la
+  // nueva, así que comparándola con la que tenemos guardada se puede
+  // reprogramar el partido solo (ver /vivo).
+  const fechaISO = fixture.fixture?.date || null;
   const golesLocal = fixture.goals?.home ?? null;
   const golesVisita = fixture.goals?.away ?? null;
 
-  // Eventos tipo "Goal" -> lista de {nombre, minuto} separada por equipo
-  // local/visita (se compara el id del equipo del evento contra el id del
-  // equipo local del fixture).
+  // Eventos tipo "Goal" -> lista de {nombre, minuto, tipo} separada por
+  // equipo local/visita (se compara el id del equipo del evento contra el id
+  // del equipo local del fixture).
+  //
+  // OJO con dos trampas de API-Football acá:
+  //
+  //  1) "Missed Penalty" (penal ERRADO) viene con type === 'Goal' — solo se
+  //     distingue por el campo "detail". Antes se filtraba solo por
+  //     type === 'Goal', así que un penal errado se mostraba como gol y el
+  //     marcador de la tarjeta no calzaba con la lista de goleadores. Ahora
+  //     se descarta explícitamente.
+  //
+  //  2) En un "Own Goal" (autogol), ev.team es el equipo del JUGADOR que se
+  //     lo hizo en contra, pero el gol cuenta para el RIVAL. Antes se
+  //     asignaba al equipo del jugador, o sea al equipo equivocado. Ahora se
+  //     invierte el lado.
+  //
+  // Se guarda además "tipo" ('normal' | 'penal' | 'autogol') para que la
+  // tarjeta pueda marcarlos distinto, y el minuto suma el tiempo añadido
+  // (ev.time.extra) para que un gol al 90+3 salga como 93' y quede bien
+  // ordenado en la línea de tiempo.
   const idEquipoLocal = fixture.teams?.home?.id;
   const eventos = fixture.events || [];
   const goleadoresLocal = [];
   const goleadoresVisita = [];
   eventos
-    .filter((ev) => ev.type === 'Goal')
+    .filter((ev) => ev.type === 'Goal' && ev.detail !== 'Missed Penalty')
     .forEach((ev) => {
-      const entrada = { nombre: ev.player?.name || 'Gol', minuto: ev.time?.elapsed ?? null };
-      if (ev.team?.id === idEquipoLocal) goleadoresLocal.push(entrada);
+      const esAutogol = ev.detail === 'Own Goal';
+      const esPenal = ev.detail === 'Penalty';
+      const minutoBase = ev.time?.elapsed ?? null;
+      const entrada = {
+        nombre: ev.player?.name || 'Gol',
+        minuto: minutoBase != null ? minutoBase + (ev.time?.extra || 0) : null,
+        tipo: esAutogol ? 'autogol' : esPenal ? 'penal' : 'normal',
+      };
+      const esDelLocal = ev.team?.id === idEquipoLocal;
+      // El autogol se le cuenta al rival del jugador que lo marcó.
+      const cuentaParaLocal = esAutogol ? !esDelLocal : esDelLocal;
+      if (cuentaParaLocal) goleadoresLocal.push(entrada);
       else goleadoresVisita.push(entrada);
     });
+  const porMinuto = (a, b) => (a.minuto ?? 999) - (b.minuto ?? 999);
+  goleadoresLocal.sort(porMinuto);
+  goleadoresVisita.sort(porMinuto);
 
   return {
     estado,
     minuto,
+    fechaISO,
     golesLocal,
     golesVisita,
     goleadoresLocal,
@@ -93,4 +130,41 @@ async function obtenerEquiposDeLiga(leagueId, season) {
   return equipos.sort((a, b) => a.localeCompare(b, 'es'));
 }
 
-module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerFixturesDeLiga, obtenerEquiposDeLiga };
+// ---------- Tabla de posiciones de una liga (usado por /posiciones-liga) ----------
+// Devuelve la tabla ya normalizada a lo que necesita la app, para no mandarle
+// al navegador el JSON crudo de API-Football (que trae muchísimo más).
+// Ojo con dos particularidades del endpoint /standings:
+//   - response[0].league.standings es un ARREGLO DE ARREGLOS: los torneos por
+//     grupos (Libertadores, Champions en fase de grupos, Mundial) devuelven
+//     una tabla por grupo; las ligas normales devuelven una sola.
+//   - "all" son los partidos totales; también vienen "home"/"away" aparte.
+async function obtenerPosicionesDeLiga(leagueId, season) {
+  const resp = await fetch(`${BASE}/standings?league=${leagueId}&season=${season}`, { headers });
+  const data = await resp.json();
+  const league = data?.response?.[0]?.league;
+  if (!league) return null;
+
+  const grupos = (league.standings || []).map((tabla) => ({
+    // En ligas simples el "group" suele repetir el nombre de la liga; en
+    // copas trae "Group A", "Group B", etc.
+    nombre: tabla?.[0]?.group || league.name || '',
+    equipos: (tabla || []).map((fila) => ({
+      puesto: fila.rank,
+      equipo: fila.team?.name || '',
+      escudo: fila.team?.logo || null,
+      pj: fila.all?.played ?? 0,
+      g: fila.all?.win ?? 0,
+      e: fila.all?.draw ?? 0,
+      p: fila.all?.lose ?? 0,
+      gf: fila.all?.goals?.for ?? 0,
+      gc: fila.all?.goals?.against ?? 0,
+      dg: fila.goalsDiff ?? 0,
+      pts: fila.points ?? 0,
+      forma: fila.form || null,
+    })),
+  }));
+
+  return { liga: league.name, logo: league.logo, temporada: league.season, grupos };
+}
+
+module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga };

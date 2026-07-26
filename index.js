@@ -14,6 +14,7 @@ const { rutaCrearPartidos } = require('./src/rutas/crearPartidos');
 const { rutaEquipos } = require('./src/rutas/equipos');
 const { rutaInvitarAGrupo } = require('./src/rutas/invitarAGrupo');
 const { rutaEnviarResumenMesa } = require('./src/rutas/enviarResumenMesa');
+const { rutaPosicionesLiga } = require('./src/rutas/posicionesLiga');
 
 const app = express();
 // Necesario para leer req.body en /invitar-a-grupo (POST con JSON) — las
@@ -45,6 +46,13 @@ app.get('/equipos', (req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   next();
 }, rutaEquipos);
+
+// /posiciones-liga: mismo caso que /equipos — solo lectura, la llama el
+// navegador del jugador al tocar el título de una tarjeta de partido.
+app.get('/posiciones-liga', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  next();
+}, rutaPosicionesLiga);
 
 // /invitar-a-grupo tampoco lleva exigirSecreto: la llama directo el
 // navegador del jugador (admin de su grupo) desde Perfil.jsx. La

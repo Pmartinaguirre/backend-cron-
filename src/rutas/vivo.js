@@ -44,16 +44,39 @@ async function rutaVivo(req, res) {
       const estado = await obtenerEstadoFixture(partido.fixture_id_api);
       if (!estado) continue;
 
+      const cambios = {
+        minuto_partido: estado.minuto,
+        marcador_parcial_local: estado.golesLocal,
+        marcador_parcial_visita: estado.golesVisita,
+        estado_partido: estado.estado,
+        goleadores_local: estado.goleadoresLocal,
+        goleadores_visita: estado.goleadoresVisita,
+      };
+
+      // PARTIDO REPROGRAMADO: cuando se posterga (PST) o se suspende, la
+      // API le pone al MISMO fixture una fecha nueva. Sin esto, el partido
+      // quedaba clavado para siempre en "En vivo": su fecha_expiracion vieja
+      // ya pasó (así que no vuelve a "Partidos"), pero nunca llega a FT
+      // (así que /resolver tampoco lo cierra). Al copiar la fecha nueva, el
+      // partido vuelve solo a la lista de "por jugar" con su horario
+      // corregido y se puede pronosticar de nuevo.
+      const ESTADOS_NO_JUGADO = ['PST', 'SUSP', 'CANC', 'ABD', 'TBD', 'NS'];
+      if (ESTADOS_NO_JUGADO.includes(estado.estado) && estado.fechaISO) {
+        const fechaNueva = new Date(estado.fechaISO);
+        const fechaActual = partido.fecha_expiracion ? new Date(partido.fecha_expiracion) : null;
+        // Solo si de verdad se movió hacia adelante (evita reescribir la
+        // misma fecha en cada corrida del cron).
+        const esFuturo = fechaNueva.getTime() > Date.now();
+        const cambio = !fechaActual || Math.abs(fechaNueva.getTime() - fechaActual.getTime()) > 60000;
+        if (esFuturo && cambio) {
+          cambios.fecha_expiracion = fechaNueva.toISOString();
+          console.log(`[/vivo] Partido ${partido.id} reprogramado (${estado.estado}) para ${fechaNueva.toISOString()}`);
+        }
+      }
+
       const { error: errUpdate } = await supabase
         .from('desafios_mvp')
-        .update({
-          minuto_partido: estado.minuto,
-          marcador_parcial_local: estado.golesLocal,
-          marcador_parcial_visita: estado.golesVisita,
-          estado_partido: estado.estado,
-          goleadores_local: estado.goleadoresLocal,
-          goleadores_visita: estado.goleadoresVisita,
-        })
+        .update(cambios)
         .eq('id', partido.id);
 
       if (errUpdate) {
