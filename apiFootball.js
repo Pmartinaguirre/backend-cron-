@@ -161,6 +161,12 @@ async function obtenerPosicionesDeLiga(leagueId, season) {
       dg: fila.goalsDiff ?? 0,
       pts: fila.points ?? 0,
       forma: fila.form || null,
+      // "description" es el texto de zona que trae API-Football por equipo:
+      // "Promotion - Copa Libertadores (Group Stage)", "Relegation", etc.
+      // Con eso la app dibuja los separadores de clasificación/descenso sin
+      // tener que hardcodear cuántos cupos da cada liga (que además cambian
+      // temporada a temporada).
+      zona: fila.description || null,
     })),
   }));
 
