@@ -173,4 +173,77 @@ async function obtenerPosicionesDeLiga(leagueId, season) {
   return { liga: league.name, logo: league.logo, temporada: league.season, grupos };
 }
 
-module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga };
+// ---------- Detalle completo de un partido (usado por /detalle-partido) ----------
+// Una sola llamada a /fixtures?id= ya trae events + lineups + statistics, así
+// que no hace falta pegarle a tres endpoints distintos (y gastar 3 consultas
+// de la cuota) para armar las pestañas Resumen y Alineaciones de la app.
+async function obtenerDetalleFixture(fixtureId) {
+  const resp = await fetch(`${BASE}/fixtures?id=${fixtureId}`, { headers });
+  const data = await resp.json();
+  const fx = data?.response?.[0];
+  if (!fx) return null;
+
+  const idLocal = fx.teams?.home?.id;
+
+  // Eventos ordenados cronológicamente, ya traducidos a algo que la app
+  // pueda pintar directo (tipo + texto), en vez del vocabulario crudo de la
+  // API ("Goal"/"subst"/"Card"/"Var").
+  const eventos = (fx.events || []).map((ev) => {
+    const tipo = (ev.type || '').toLowerCase();
+    const detalle = ev.detail || '';
+    let clase = 'otro';
+    if (tipo === 'goal') clase = detalle === 'Missed Penalty' ? 'penal_errado' : detalle === 'Own Goal' ? 'autogol' : detalle === 'Penalty' ? 'penal' : 'gol';
+    else if (tipo === 'card') clase = detalle === 'Red Card' ? 'roja' : 'amarilla';
+    else if (tipo === 'subst') clase = 'cambio';
+    else if (tipo === 'var') clase = 'var';
+    return {
+      minuto: ev.time?.elapsed != null ? ev.time.elapsed + (ev.time?.extra || 0) : null,
+      clase,
+      detalle,
+      // En un cambio, "player" es el que ENTRA y "assist" el que sale.
+      jugador: ev.player?.name || null,
+      secundario: ev.assist?.name || null,
+      esLocal: ev.team?.id === idLocal,
+      equipo: ev.team?.name || null,
+    };
+  }).sort((a, b) => (a.minuto ?? 999) - (b.minuto ?? 999));
+
+  const armarAlineacion = (l) => l ? {
+    equipo: l.team?.name || '',
+    escudo: l.team?.logo || null,
+    formacion: l.formation || null,
+    entrenador: l.coach?.name || null,
+    titulares: (l.startXI || []).map((x) => ({
+      nombre: x.player?.name || '', numero: x.player?.number ?? null, posicion: x.player?.pos || null,
+    })),
+    suplentes: (l.substitutes || []).map((x) => ({
+      nombre: x.player?.name || '', numero: x.player?.number ?? null, posicion: x.player?.pos || null,
+    })),
+  } : null;
+
+  const lineups = fx.lineups || [];
+  const alineacionLocal = armarAlineacion(lineups.find((l) => l.team?.id === idLocal));
+  const alineacionVisita = armarAlineacion(lineups.find((l) => l.team?.id !== idLocal));
+
+  // Estadísticas (tiros, posesión, corners...): vienen como pares
+  // {type, value} por equipo. Se cruzan en una sola lista para que la app
+  // pinte "local | concepto | visita" sin tener que emparejar nada.
+  const statsLocal = (fx.statistics || []).find((s) => s.team?.id === idLocal)?.statistics || [];
+  const statsVisita = (fx.statistics || []).find((s) => s.team?.id !== idLocal)?.statistics || [];
+  const estadisticas = statsLocal.map((s) => ({
+    concepto: s.type,
+    local: s.value,
+    visita: statsVisita.find((x) => x.type === s.type)?.value ?? null,
+  }));
+
+  return {
+    equipoLocal: fx.teams?.home?.name || '',
+    equipoVisita: fx.teams?.away?.name || '',
+    eventos,
+    alineacionLocal,
+    alineacionVisita,
+    estadisticas,
+  };
+}
+
+module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture };
