@@ -27,8 +27,12 @@ async function rutaPosicionesLiga(req, res) {
     return res.status(404).json({ error: `No hay tabla de posiciones para "${competencia}".` });
   }
 
+  // &refrescar=1 saltea el caché: lo manda el botón "Actualizar" de la app,
+  // para el caso típico de "acaba de terminar un partido y quiero ver la
+  // tabla ya actualizada" sin tener que esperar a que venza el caché.
+  const forzar = req.query.refrescar === '1';
   const enCache = cache.get(competencia);
-  if (enCache && enCache.expira > Date.now()) {
+  if (!forzar && enCache && enCache.expira > Date.now()) {
     return res.json({ ...enCache.datos, deCache: true });
   }
 
