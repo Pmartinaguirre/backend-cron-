@@ -46,6 +46,7 @@ async function rutaVivo(req, res) {
 
       const cambios = {
         minuto_partido: estado.minuto,
+        minuto_extra: estado.minutoExtra,
         marcador_parcial_local: estado.golesLocal,
         marcador_parcial_visita: estado.golesVisita,
         estado_partido: estado.estado,

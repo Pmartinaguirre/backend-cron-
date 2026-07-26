@@ -50,6 +50,10 @@ async function obtenerEstadoFixture(fixtureId) {
 
   const estado = fixture.fixture?.status?.short || null; // NS, 1H, HT, 2H, FT, PST, etc.
   const minuto = fixture.fixture?.status?.elapsed ?? null;
+  // Tiempo de descuento: API-Football lo manda aparte de "elapsed" (en un
+  // 90+5, elapsed=90 y extra=5). Se guarda separado para poder mostrar
+  // "90'+5'" en vez de sumarlos y perder la distinción.
+  const minutoExtra = fixture.fixture?.status?.extra ?? null;
   // Fecha del fixture según la API. Importa para los partidos POSTERGADOS:
   // API-Football mantiene el mismo fixture id y le cambia la fecha a la
   // nueva, así que comparándola con la que tenemos guardada se puede
@@ -107,6 +111,7 @@ async function obtenerEstadoFixture(fixtureId) {
   return {
     estado,
     minuto,
+    minutoExtra,
     fechaISO,
     golesLocal,
     golesVisita,
