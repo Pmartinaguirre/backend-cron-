@@ -13,6 +13,7 @@ const LIGAS = [
   { competencia: 'Primera División Chile', leagueId: 265 },
   { competencia: 'Ligue 1 Francia', leagueId: 61 },
   { competencia: 'Champions League', leagueId: 2 },
+  { competencia: 'Liga MX México', leagueId: 262 },
 ];
 
 const TEMPORADA = process.env.API_FOOTBALL_SEASON || '2026';
