@@ -130,4 +130,41 @@ async function obtenerEquiposDeLiga(leagueId, season) {
   return equipos.sort((a, b) => a.localeCompare(b, 'es'));
 }
 
-module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerFixturesDeLiga, obtenerEquiposDeLiga };
+// ---------- Tabla de posiciones de una liga (usado por /posiciones-liga) ----------
+// Devuelve la tabla ya normalizada a lo que necesita la app, para no mandarle
+// al navegador el JSON crudo de API-Football (que trae muchísimo más).
+// Ojo con dos particularidades del endpoint /standings:
+//   - response[0].league.standings es un ARREGLO DE ARREGLOS: los torneos por
+//     grupos (Libertadores, Champions en fase de grupos, Mundial) devuelven
+//     una tabla por grupo; las ligas normales devuelven una sola.
+//   - "all" son los partidos totales; también vienen "home"/"away" aparte.
+async function obtenerPosicionesDeLiga(leagueId, season) {
+  const resp = await fetch(`${BASE}/standings?league=${leagueId}&season=${season}`, { headers });
+  const data = await resp.json();
+  const league = data?.response?.[0]?.league;
+  if (!league) return null;
+
+  const grupos = (league.standings || []).map((tabla) => ({
+    // En ligas simples el "group" suele repetir el nombre de la liga; en
+    // copas trae "Group A", "Group B", etc.
+    nombre: tabla?.[0]?.group || league.name || '',
+    equipos: (tabla || []).map((fila) => ({
+      puesto: fila.rank,
+      equipo: fila.team?.name || '',
+      escudo: fila.team?.logo || null,
+      pj: fila.all?.played ?? 0,
+      g: fila.all?.win ?? 0,
+      e: fila.all?.draw ?? 0,
+      p: fila.all?.lose ?? 0,
+      gf: fila.all?.goals?.for ?? 0,
+      gc: fila.all?.goals?.against ?? 0,
+      dg: fila.goalsDiff ?? 0,
+      pts: fila.points ?? 0,
+      forma: fila.form || null,
+    })),
+  }));
+
+  return { liga: league.name, logo: league.logo, temporada: league.season, grupos };
+}
+
+module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga };
