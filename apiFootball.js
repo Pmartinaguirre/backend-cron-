@@ -48,8 +48,13 @@ async function obtenerEstadoFixture(fixtureId) {
   const fixture = data?.response?.[0];
   if (!fixture) return null;
 
-  const estado = fixture.fixture?.status?.short || null; // NS, 1H, HT, 2H, FT, etc.
+  const estado = fixture.fixture?.status?.short || null; // NS, 1H, HT, 2H, FT, PST, etc.
   const minuto = fixture.fixture?.status?.elapsed ?? null;
+  // Fecha del fixture según la API. Importa para los partidos POSTERGADOS:
+  // API-Football mantiene el mismo fixture id y le cambia la fecha a la
+  // nueva, así que comparándola con la que tenemos guardada se puede
+  // reprogramar el partido solo (ver /vivo).
+  const fechaISO = fixture.fixture?.date || null;
   const golesLocal = fixture.goals?.home ?? null;
   const golesVisita = fixture.goals?.away ?? null;
 
@@ -102,6 +107,7 @@ async function obtenerEstadoFixture(fixtureId) {
   return {
     estado,
     minuto,
+    fechaISO,
     golesLocal,
     golesVisita,
     goleadoresLocal,
