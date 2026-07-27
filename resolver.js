@@ -107,7 +107,10 @@ async function rutaResolver(req, res) {
   // se quedaba en la lista de forma indefinida y consumía una llamada a
   // API-Football en cada corrida del cron, para siempre. Ahora el criterio es
   // el mismo que usa /vivo (ver src/partidosPendientes.js).
-  const pendientes = filtrarPendientes(partidos);
+  // 'resolver' — el modo importa: a diferencia de /vivo, acá los partidos en
+  // FT son justamente los que hay que procesar. Con el modo por defecto se
+  // descartaban y quedaban sin pagar para siempre.
+  const pendientes = filtrarPendientes(partidos, 'resolver');
   const abandonados = partidosAbandonados(partidos);
 
   const resultado = {
