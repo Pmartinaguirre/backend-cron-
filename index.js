@@ -17,6 +17,7 @@ const { rutaEnviarResumenMesa } = require('./src/rutas/enviarResumenMesa');
 const { rutaPosicionesLiga } = require('./src/rutas/posicionesLiga');
 const { rutaDetallePartido } = require('./src/rutas/detallePartido');
 const { rutaJugador, rutaClub } = require('./src/rutas/fichas');
+const { rutaBackfillEquipos, rutaForma } = require('./src/rutas/equiposIds');
 
 const app = express();
 // Necesario para leer req.body en /invitar-a-grupo (POST con JSON) — las
@@ -75,6 +76,19 @@ app.get('/club', (req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   next();
 }, rutaClub);
+
+// /forma: últimos 5 resultados de varios equipos de una vez, para la tira
+// V/E/P que va bajo cada equipo en las tarjetas de partido. Solo lectura.
+app.get('/forma', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  next();
+}, rutaForma);
+
+// /backfill-equipos: completa equipo_local_id / equipo_visita_id en los
+// partidos que se crearon antes de que se guardaran esos ids. Escribe en la
+// base, así que SÍ lleva secreto. Se corre a mano hasta que devuelva
+// "pendientes": 0, y después no se usa nunca más.
+app.get('/backfill-equipos', exigirSecreto, rutaBackfillEquipos);
 
 // /invitar-a-grupo tampoco lleva exigirSecreto: la llama directo el
 // navegador del jugador (admin de su grupo) desde Perfil.jsx. La

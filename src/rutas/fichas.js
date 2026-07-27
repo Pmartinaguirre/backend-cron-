@@ -21,10 +21,11 @@
 const { obtenerFichaJugador, obtenerFichaClub } = require('../apiFootball');
 
 const CACHE_JUGADOR_MS = 24 * 60 * 60 * 1000;
-const CACHE_CLUB_MS = 30 * 60 * 1000;
 
 const cacheJugador = new Map(); // id -> { datos, expira }
-const cacheClub = new Map();    // id -> { datos, expira }
+// OJO: los clubes ya NO se cachean acá. Su caché se mudó adentro de
+// obtenerFichaClub (src/apiFootball.js) porque /forma también la necesita, y
+// desde una ruta no la podía aprovechar.
 
 // El caché vive en memoria del proceso y Render reinicia el servicio cada
 // tanto (y lo duerme en el plan gratis), así que se vacía solo. Aun así se le
@@ -65,17 +66,12 @@ async function rutaClub(req, res) {
   const id = req.query.id;
   if (!id) return res.status(400).json({ error: 'Falta el parámetro "id".' });
 
-  const enCache = cacheClub.get(String(id));
-  if (enCache && enCache.expira > Date.now()) {
-    return res.json({ ...enCache.datos, deCache: true });
-  }
-
   try {
+    // obtenerFichaClub ya cachea 30 min por su cuenta (ver apiFootball.js).
     const ficha = await obtenerFichaClub(id);
     if (!ficha) {
       return res.status(404).json({ error: `API-Football no tiene datos del club ${id}.` });
     }
-    guardarEnCache(cacheClub, String(id), ficha, CACHE_CLUB_MS);
     res.json(ficha);
   } catch (e) {
     console.error(`[/club] Error con el club ${id}:`, e);

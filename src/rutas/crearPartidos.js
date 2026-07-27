@@ -172,6 +172,12 @@ async function rutaCrearPartidos(req, res) {
           opciones: [`Gana ${equipoLocal}`, 'Empate', `Gana ${equipoVisita}`],
           equipo_local: equipoLocal,
           equipo_visitante: equipoVisita,
+          // Los IDs de API-Football, además de los nombres. Son los que
+          // permiten después pedir la ficha del club y sus últimos
+          // resultados: cruzar por nombre no sirve, la API dice
+          // "Universidad Catolica" donde la app dice "U. Catolica".
+          equipo_local_id: fx.teams?.home?.id ?? null,
+          equipo_visita_id: fx.teams?.away?.id ?? null,
           recompensa: 120,
           esta_activo: true,
           tiempo: tiempoCorto(fechaISO),

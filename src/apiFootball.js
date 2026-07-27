@@ -343,7 +343,22 @@ async function obtenerFichaJugador(playerId) {
 // jugados con marcador y rival. El escudo y los datos del club vienen dentro
 // de esos mismos fixtures, así que no hace falta pedir /teams aparte y gastar
 // una segunda consulta.
+// La caché vive ACÁ y no en la ruta a propósito: la usan dos endpoints
+// distintos (/club, que abre la ficha, y /forma, que dibuja la tira de
+// últimos resultados en cada tarjeta de partido). Si estuviera en /club,
+// /forma la saltaría y una sola pantalla de Partidos dispararía 30 consultas
+// a API-Football cada vez que alguien la abre.
+//
+// 30 minutos: los últimos 5 partidos solo cambian cuando termina uno.
+const CACHE_CLUB_MS = 30 * 60 * 1000;
+const MAX_CLUBES_EN_CACHE = 500;
+const cacheClubes = new Map(); // teamId -> { datos, expira }
+
 async function obtenerFichaClub(teamId) {
+  const clave = String(teamId);
+  const enCache = cacheClubes.get(clave);
+  if (enCache && enCache.expira > Date.now()) return enCache.datos;
+
   const resp = await fetch(`${BASE}/fixtures?team=${teamId}&last=5`, { headers });
   const data = await resp.json();
   const fixtures = data?.response || [];
@@ -381,12 +396,22 @@ async function obtenerFichaClub(teamId) {
     };
   }).sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
 
-  return {
+  const ficha = {
     id: idNum,
     nombre: propio?.name || '',
     escudo: propio?.logo || null,
     partidos,
   };
+
+  // Tope de entradas para que el proceso no crezca sin límite si alguien
+  // recorre cientos de clubes. Map conserva el orden de inserción, así que
+  // se descarta el más viejo.
+  if (cacheClubes.size >= MAX_CLUBES_EN_CACHE) {
+    cacheClubes.delete(cacheClubes.keys().next().value);
+  }
+  cacheClubes.set(clave, { datos: ficha, expira: Date.now() + CACHE_CLUB_MS });
+
+  return ficha;
 }
 
 module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture, obtenerFichaJugador, obtenerFichaClub };
