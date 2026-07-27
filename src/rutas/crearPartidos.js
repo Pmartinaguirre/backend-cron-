@@ -1,12 +1,17 @@
 // GET/POST /crear-partidos — crea partidos nuevos solos, según los criterios
 // que definiste:
-//   1) De cada liga, solo se traen partidos donde AMBOS equipos están en la
-//      lista de "Tier A" de esa competencia (tabla equipos_tier_a_mvp, la
-//      misma que llenas en el Admin) — no se trae la liga completa.
+//   1) Cada competencia tiene un MODO (ver src/ligas.js):
+//      - 'completa' → se traen TODOS los partidos de la fecha. Es el caso de
+//        la liga chilena, la Libertadores y la Sudamericana: son las que el
+//        jugador sigue enteras y no se le puede esconder media fecha.
+//      - 'tier_a'   → solo partidos donde AMBOS equipos están en la lista
+//        Tier A de esa competencia (tabla equipos_tier_a_mvp, la que llenas
+//        en el Admin). Es el caso de las ligas europeas y Argentina, con 18-20
+//        partidos por fecha de los que solo un puñado interesa acá.
 //   2) EXCEPCIÓN: en instancias finales (octavos/round of 16, cuartos,
 //      semifinal, final, playoffs) se traen TODOS los partidos de esa fase,
-//      sin filtrar por Tier A. Se detecta solo, mirando el nombre de la
-//      fase que entrega la propia API-Football (ver KEYWORDS_KNOCKOUT).
+//      sin filtrar por Tier A, sea cual sea el modo. Se detecta solo, mirando
+//      el nombre de la fase que entrega API-Football (ver KEYWORDS_KNOCKOUT).
 //   3) De cada lote de partidos nuevos que se crean (Tier A + instancias
 //      finales incluidas), un ~25% sale al azar como Categoría 4
 //      (pronóstico de marcador exacto) — el resto, Categoría 5 (solo LEV).
@@ -22,13 +27,21 @@ const { supabase } = require('../supabaseClient');
 const { obtenerFixturesDeLiga } = require('../apiFootball');
 const { esMismoEquipo } = require('../normalizar');
 const { subtituloFecha, tiempoCorto } = require('../utilFechas');
-const { LIGAS, TEMPORADA } = require('../ligas');
+const { LIGAS, TEMPORADA, modoDeCompetencia, MODO_TIER_A } = require('../ligas');
 
 // Cuántos días hacia adelante se buscan partidos nuevos. Con esto no hace
 // falta la lógica vieja de "activar la próxima fecha a mano": el cron solo
 // trae lo que ya está por jugarse pronto, y lo crea directo con
 // esta_activo = true.
-const DIAS_ANTICIPACION = Number(process.env.DIAS_ANTICIPACION) || 10;
+//
+// SIETE días, no diez: la unidad natural de este producto es la semana —
+// el jugador entra, resuelve la fecha completa y vuelve la semana siguiente.
+// Con una ventana más larga la lista se llena de partidos lejanos que nadie
+// pronostica todavía y que empujan hacia abajo los de este fin de semana.
+//
+// OJO: si en Render está definida la variable de entorno DIAS_ANTICIPACION,
+// ESA manda por sobre este valor. Si el cambio no se nota, revisa ahí.
+const DIAS_ANTICIPACION = Number(process.env.DIAS_ANTICIPACION) || 7;
 const PROBABILIDAD_CAT4 = 0.25;
 
 // Nombres de fase de API-Football que cuentan como "instancia final" — si
@@ -79,6 +92,7 @@ async function rutaCrearPartidos(req, res) {
     // diagnóstico (por qué un partido "revisado" no terminó ni creado ni
     // saltado por Tier A) — ninguno de los dos bloquea nada, son informativos.
     const resumenLiga = {
+      modo: modoDeCompetencia(competencia),
       revisados: 0,
       creados: 0,
       saltadosPorTierA: 0,
@@ -137,12 +151,22 @@ async function rutaCrearPartidos(req, res) {
         }
 
         const esFinal = esInstanciaFinal(nombreRonda);
-        if (!esFinal) {
-          // No es instancia final: exige Tier A configurado Y ambos
-          // equipos en la lista. Si la competencia no tiene Tier A
-          // cargado todavía, no se trae nada de temporada regular (para
-          // no traer la liga completa por accidente si se olvidó
-          // configurar la lista).
+        // Competencias en modo COMPLETA (liga chilena, Libertadores,
+        // Sudamericana): se crean todos los partidos de la fecha, sin filtro
+        // de Tier A. Antes esto no existía y por eso faltaba media fecha del
+        // campeonato chileno — un Unión La Calera vs Everton no pasaba el
+        // filtro y simplemente nunca se creaba, así que la app no tenía cómo
+        // mostrarlo.
+        //
+        // El recorte por Tier A en estas competencias pasa a ser una decisión
+        // de cada GRUPO, y filtra lo que se muestra. Para poder ocultar un
+        // partido primero hay que tenerlo.
+        const modo = modoDeCompetencia(competencia);
+        if (!esFinal && modo === MODO_TIER_A) {
+          // Exige Tier A configurado Y ambos equipos en la lista. Si la
+          // competencia no tiene Tier A cargado todavía, no se trae nada de
+          // temporada regular (para no traer la liga completa por accidente
+          // si se olvidó configurar la lista).
           if (listaTierA.length === 0) {
             resumenLiga.saltadosPorTierA++;
             continue;

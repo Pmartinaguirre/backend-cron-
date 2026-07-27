@@ -371,6 +371,20 @@ async function obtenerFichaClub(teamId) {
   const esLocalEnPrimero = primero.teams?.home?.id === idNum;
   const propio = esLocalEnPrimero ? primero.teams?.home : primero.teams?.away;
 
+  // País del club. Se saca de la competencia de sus últimos partidos, que ya
+  // vienen en esta misma respuesta — pedir /teams?id= sería una llamada extra
+  // por el mismo dato.
+  // Se descartan los torneos internacionales (Libertadores, Sudamericana,
+  // Champions), donde league.country es "World" y no dice de dónde es el
+  // equipo. Entre los que quedan se toma el más frecuente.
+  const conteoPaises = {};
+  fixtures.forEach((fx) => {
+    const p = fx.league?.country;
+    if (!p || p === 'World') return;
+    conteoPaises[p] = (conteoPaises[p] || 0) + 1;
+  });
+  const pais = Object.entries(conteoPaises).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+
   const partidos = fixtures.map((fx) => {
     const esLocal = fx.teams?.home?.id === idNum;
     const golesPropios = esLocal ? fx.goals?.home : fx.goals?.away;
@@ -392,6 +406,16 @@ async function obtenerFichaClub(teamId) {
       rivalId: rival?.id ?? null,
       golesPropios: golesPropios ?? null,
       golesRival: golesRival ?? null,
+      // Los dos equipos en su orden real (local primero), además del punto de
+      // vista propio de arriba. Sin esto, la app no puede mostrar el partido
+      // como se lee en cualquier diario —"Rosario Central 1-2 Belgrano"—:
+      // tendría que deducir el orden y a veces lo daría vuelta.
+      local: (esLocal ? propio : rival)?.name || null,
+      visita: (esLocal ? rival : propio)?.name || null,
+      localId: (esLocal ? propio : rival)?.id ?? null,
+      visitaId: (esLocal ? rival : propio)?.id ?? null,
+      golesLocal: fx.goals?.home ?? null,
+      golesVisita: fx.goals?.away ?? null,
       resultado,
     };
   }).sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
@@ -400,6 +424,7 @@ async function obtenerFichaClub(teamId) {
     id: idNum,
     nombre: propio?.name || '',
     escudo: propio?.logo || null,
+    pais,
     partidos,
   };
 
