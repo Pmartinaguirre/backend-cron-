@@ -22,14 +22,30 @@
 // una nueva, pero solo se activa si esa fecha es futura. Un partido postergado
 // sin fecha nueva, o cancelado de verdad, nunca sale por ahí.
 
-// Estados en los que ya no hay nada más que preguntar:
-//   FT / AET / PEN → terminó (normal, tras alargue, tras penales).
-//   CANC / ABD / AWD / WO → no se jugó ni se va a jugar (cancelado,
-//     abandonado, ganado en escritorio, walkover).
+// Hay DOS listas de estados y la diferencia entre ellas es la corrección de
+// un bug real, así que conviene entenderla bien.
+//
+// Partido TERMINADO (FT / AET / PEN): el resultado ya existe.
+//   - /vivo NO tiene nada que hacer con él: no hay minuto ni marcador que
+//     actualizar.
+//   - /resolver SÍ lo necesita: es EXACTAMENTE el partido que está buscando
+//     para pagar los diamantes.
+//
+// Al principio los dos endpoints compartían una sola lista que incluía FT, y
+// eso rompió la cadena: /vivo marcaba el partido como FT y desde ese momento
+// /resolver dejaba de verlo. El partido quedaba para siempre en "En vivo",
+// con su FT puesto y sin pagar nunca (caso Boca Juniors vs Deportivo
+// Riestra).
+const ESTADOS_YA_JUGADO = ['FT', 'AET', 'PEN'];
+
+// Partido que NO se jugó ni se va a jugar. Para los dos endpoints es igual:
+// no hay nada que actualizar ni nada que pagar.
 // PST, SUSP y TBD NO están acá a propósito: esos sí se pueden reprogramar, y
 // mientras estén dentro de la ventana de días conviene seguir mirándolos por
 // si la API publica la fecha nueva. De limitarlos se encarga DIAS_GRACIA.
-const ESTADOS_TERMINADOS = ['FT', 'AET', 'PEN', 'CANC', 'ABD', 'AWD', 'WO'];
+const ESTADOS_SIN_PARTIDO = ['CANC', 'ABD', 'AWD', 'WO'];
+
+const ESTADOS_TERMINADOS = [...ESTADOS_YA_JUGADO, ...ESTADOS_SIN_PARTIDO];
 
 // Red de seguridad por tiempo. Si pasaron más de 3 días desde la fecha del
 // partido y sigue sin resolverse, algo salió mal (la API perdió el fixture, el
@@ -44,16 +60,21 @@ const ESTADOS_TERMINADOS = ['FT', 'AET', 'PEN', 'CANC', 'ABD', 'AWD', 'WO'];
 const DIAS_GRACIA = 3;
 
 // `partidos` son las filas de desafios_mvp que ya trajo el endpoint.
-// Devuelve solo aquellas por las que todavía tiene sentido gastar una llamada.
-function filtrarPendientes(partidos) {
+// `para` dice quién pregunta: 'vivo' o 'resolver'. NO es un detalle — es la
+// diferencia entre incluir o excluir los partidos ya terminados (ver la nota
+// de las dos listas de estados, más arriba).
+function filtrarPendientes(partidos, para = 'vivo') {
   const limiteViejo = Date.now() - DIAS_GRACIA * 24 * 60 * 60 * 1000;
+  const estadosADescartar = para === 'resolver'
+    ? ESTADOS_SIN_PARTIDO            // /resolver quiere los FT
+    : ESTADOS_TERMINADOS;            // /vivo no tiene nada que hacer con ellos
 
   return (partidos || []).filter((p) => {
     // OJO: este filtro va en memoria y no en la consulta a Supabase. En SQL,
     // "estado_partido <> 'FT'" excluye también las filas donde la columna es
     // NULL, y los partidos recién activados todavía no tienen estado puesto:
     // quedarían fuera para siempre y nunca se actualizarían.
-    if (ESTADOS_TERMINADOS.includes(p.estado_partido)) return false;
+    if (estadosADescartar.includes(p.estado_partido)) return false;
 
     const fecha = p.fecha_expiracion ? new Date(p.fecha_expiracion).getTime() : null;
     if (fecha != null && Number.isFinite(fecha) && fecha < limiteViejo) return false;
@@ -79,4 +100,4 @@ function partidosAbandonados(partidos) {
     .map((p) => ({ id: p.id, estado: p.estado_partido, fecha: p.fecha_expiracion }));
 }
 
-module.exports = { filtrarPendientes, partidosAbandonados, ESTADOS_TERMINADOS, DIAS_GRACIA };
+module.exports = { filtrarPendientes, partidosAbandonados, ESTADOS_TERMINADOS, ESTADOS_YA_JUGADO, ESTADOS_SIN_PARTIDO, DIAS_GRACIA };
