@@ -76,8 +76,23 @@ function filtrarPendientes(partidos, para = 'vivo') {
     // quedarían fuera para siempre y nunca se actualizarían.
     if (estadosADescartar.includes(p.estado_partido)) return false;
 
-    const fecha = p.fecha_expiracion ? new Date(p.fecha_expiracion).getTime() : null;
-    if (fecha != null && Number.isFinite(fecha) && fecha < limiteViejo) return false;
+    // UN PARTIDO EN FT NUNCA SE ABANDONA POR VIEJO.
+    //
+    // DIAS_GRACIA existe para dejar de perseguir zombis: partidos que nunca
+    // van a terminar (mal vinculados, cancelados sin avisar, postergados sin
+    // fecha nueva). Pero un partido con FT no es un zombi — es un PAGO
+    // PENDIENTE, y ya sabemos su resultado.
+    //
+    // Aplicarle el corte de 3 días fue un error con consecuencia visible:
+    // /resolver lo abandonaba, nadie cobraba sus diamantes, y como el
+    // frontend define "En vivo" como "cerrado y sin resolver", el partido se
+    // quedaba ahí para siempre. Fue el caso de Boca Juniors vs Deportivo
+    // Riestra: FT hacía días, en la lista de partidos en vivo.
+    const yaTerminado = ESTADOS_YA_JUGADO.includes(p.estado_partido);
+    if (!yaTerminado) {
+      const fecha = p.fecha_expiracion ? new Date(p.fecha_expiracion).getTime() : null;
+      if (fecha != null && Number.isFinite(fecha) && fecha < limiteViejo) return false;
+    }
 
     // Ya resuelto por /resolver: Cat.5 guarda resultado_oficial, Cat.4 guarda
     // el marcador. Si ya está, no hay nada que actualizar ni que pagar.
@@ -93,6 +108,10 @@ function partidosAbandonados(partidos) {
   return (partidos || [])
     .filter((p) => {
       if (ESTADOS_TERMINADOS.includes(p.estado_partido)) return false;
+      // Coherente con filtrarPendientes: un FT nunca se abandona, así que
+      // tampoco se reporta como abandonado. Si no, el endpoint diría que
+      // dejó de mirar un partido que en realidad sigue procesando.
+      if (ESTADOS_YA_JUGADO.includes(p.estado_partido)) return false;
       const fecha = p.fecha_expiracion ? new Date(p.fecha_expiracion).getTime() : null;
       if (fecha == null || !Number.isFinite(fecha) || fecha >= limiteViejo) return false;
       return Number(p.categoria) === 5 ? !p.resultado_oficial : p.goles_local_oficial == null;
