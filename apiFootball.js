@@ -343,7 +343,22 @@ async function obtenerFichaJugador(playerId) {
 // jugados con marcador y rival. El escudo y los datos del club vienen dentro
 // de esos mismos fixtures, así que no hace falta pedir /teams aparte y gastar
 // una segunda consulta.
+// La caché vive ACÁ y no en la ruta a propósito: la usan dos endpoints
+// distintos (/club, que abre la ficha, y /forma, que dibuja la tira de
+// últimos resultados en cada tarjeta de partido). Si estuviera en /club,
+// /forma la saltaría y una sola pantalla de Partidos dispararía 30 consultas
+// a API-Football cada vez que alguien la abre.
+//
+// 30 minutos: los últimos 5 partidos solo cambian cuando termina uno.
+const CACHE_CLUB_MS = 30 * 60 * 1000;
+const MAX_CLUBES_EN_CACHE = 500;
+const cacheClubes = new Map(); // teamId -> { datos, expira }
+
 async function obtenerFichaClub(teamId) {
+  const clave = String(teamId);
+  const enCache = cacheClubes.get(clave);
+  if (enCache && enCache.expira > Date.now()) return enCache.datos;
+
   const resp = await fetch(`${BASE}/fixtures?team=${teamId}&last=5`, { headers });
   const data = await resp.json();
   const fixtures = data?.response || [];
@@ -355,6 +370,20 @@ async function obtenerFichaClub(teamId) {
   const primero = fixtures[0];
   const esLocalEnPrimero = primero.teams?.home?.id === idNum;
   const propio = esLocalEnPrimero ? primero.teams?.home : primero.teams?.away;
+
+  // País del club. Se saca de la competencia de sus últimos partidos, que ya
+  // vienen en esta misma respuesta — pedir /teams?id= sería una llamada extra
+  // por el mismo dato.
+  // Se descartan los torneos internacionales (Libertadores, Sudamericana,
+  // Champions), donde league.country es "World" y no dice de dónde es el
+  // equipo. Entre los que quedan se toma el más frecuente.
+  const conteoPaises = {};
+  fixtures.forEach((fx) => {
+    const p = fx.league?.country;
+    if (!p || p === 'World') return;
+    conteoPaises[p] = (conteoPaises[p] || 0) + 1;
+  });
+  const pais = Object.entries(conteoPaises).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
 
   const partidos = fixtures.map((fx) => {
     const esLocal = fx.teams?.home?.id === idNum;
@@ -377,16 +406,37 @@ async function obtenerFichaClub(teamId) {
       rivalId: rival?.id ?? null,
       golesPropios: golesPropios ?? null,
       golesRival: golesRival ?? null,
+      // Los dos equipos en su orden real (local primero), además del punto de
+      // vista propio de arriba. Sin esto, la app no puede mostrar el partido
+      // como se lee en cualquier diario —"Rosario Central 1-2 Belgrano"—:
+      // tendría que deducir el orden y a veces lo daría vuelta.
+      local: (esLocal ? propio : rival)?.name || null,
+      visita: (esLocal ? rival : propio)?.name || null,
+      localId: (esLocal ? propio : rival)?.id ?? null,
+      visitaId: (esLocal ? rival : propio)?.id ?? null,
+      golesLocal: fx.goals?.home ?? null,
+      golesVisita: fx.goals?.away ?? null,
       resultado,
     };
   }).sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
 
-  return {
+  const ficha = {
     id: idNum,
     nombre: propio?.name || '',
     escudo: propio?.logo || null,
+    pais,
     partidos,
   };
+
+  // Tope de entradas para que el proceso no crezca sin límite si alguien
+  // recorre cientos de clubes. Map conserva el orden de inserción, así que
+  // se descarta el más viejo.
+  if (cacheClubes.size >= MAX_CLUBES_EN_CACHE) {
+    cacheClubes.delete(cacheClubes.keys().next().value);
+  }
+  cacheClubes.set(clave, { datos: ficha, expira: Date.now() + CACHE_CLUB_MS });
+
+  return ficha;
 }
 
 module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture, obtenerFichaJugador, obtenerFichaClub };
