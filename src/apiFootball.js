@@ -208,12 +208,32 @@ async function obtenerDetalleFixture(fixtureId) {
       // En un cambio, "player" es el que ENTRA y "assist" el que sale.
       jugador: ev.player?.name || null,
       secundario: ev.assist?.name || null,
+      // Los ids son lo que permite cruzar el evento con el jugador de la
+      // alineación. Cruzar por NOMBRE no sirve: API-Football manda
+      // "G. Ávalos" en la alineación y "Gabriel Ávalos" en el evento según
+      // el caso, y con acentos y apellidos compuestos eso falla seguido.
+      jugadorId: ev.player?.id ?? null,
+      secundarioId: ev.assist?.id ?? null,
       esLocal: ev.team?.id === idLocal,
       equipo: ev.team?.name || null,
     };
   }).sort((a, b) => (a.minuto ?? 999) - (b.minuto ?? 999));
 
+  // El id de cada jugador vale doble: sirve para cruzar los eventos (goles,
+  // tarjetas, cambios) con su ficha en la cancha, y para armar la URL de su
+  // foto en el CDN de API-Football —
+  // https://media.api-sports.io/football/players/<id>.png — que es un
+  // archivo estático y NO consume cuota de la API.
+  const armarJugador = (x) => ({
+    id: x.player?.id ?? null,
+    nombre: x.player?.name || '',
+    numero: x.player?.number ?? null,
+    posicion: x.player?.pos || null,
+    grid: x.player?.grid || null,
+  });
+
   const armarAlineacion = (l) => l ? {
+    equipoId: l.team?.id ?? null,
     equipo: l.team?.name || '',
     escudo: l.team?.logo || null,
     formacion: l.formation || null,
@@ -226,13 +246,8 @@ async function obtenerDetalleFixture(fixtureId) {
     // corrido, por ejemplo). API-Football no siempre lo manda —en ligas
     // chicas suele venir null—, así que el frontend cae al string de
     // formación cuando falta.
-    titulares: (l.startXI || []).map((x) => ({
-      nombre: x.player?.name || '', numero: x.player?.number ?? null, posicion: x.player?.pos || null,
-      grid: x.player?.grid || null,
-    })),
-    suplentes: (l.substitutes || []).map((x) => ({
-      nombre: x.player?.name || '', numero: x.player?.number ?? null, posicion: x.player?.pos || null,
-    })),
+    titulares: (l.startXI || []).map(armarJugador),
+    suplentes: (l.substitutes || []).map(armarJugador),
   } : null;
 
   const lineups = fx.lineups || [];
@@ -253,6 +268,10 @@ async function obtenerDetalleFixture(fixtureId) {
   return {
     equipoLocal: fx.teams?.home?.name || '',
     equipoVisita: fx.teams?.away?.name || '',
+    // Ids de equipo: los usa la app para abrir la ficha del club y para el
+    // escudo del CDN (media.api-sports.io/football/teams/<id>.png).
+    equipoLocalId: fx.teams?.home?.id ?? null,
+    equipoVisitaId: fx.teams?.away?.id ?? null,
     eventos,
     alineacionLocal,
     alineacionVisita,
@@ -260,4 +279,114 @@ async function obtenerDetalleFixture(fixtureId) {
   };
 }
 
-module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture };
+// ============================================================
+// FICHA DE JUGADOR
+// ============================================================
+// Dos llamadas: el perfil (/players/profiles) y el historial de traspasos
+// (/transfers). Se piden en PARALELO con Promise.all — en serie la ficha
+// tardaría el doble en abrirse, y son independientes entre sí.
+//
+// Se usa /players/profiles y no /players?id=&season= porque este último
+// obliga a mandar una temporada y devuelve las estadísticas de ESA temporada;
+// para la ficha solo se necesitan los datos personales, que no dependen del
+// año, y así no hay que adivinar en qué temporada está jugando.
+async function obtenerFichaJugador(playerId) {
+  const [respPerfil, respTransferencias] = await Promise.all([
+    fetch(`${BASE}/players/profiles?player=${playerId}`, { headers }),
+    fetch(`${BASE}/transfers?player=${playerId}`, { headers }),
+  ]);
+  const dataPerfil = await respPerfil.json();
+  const dataTransferencias = await respTransferencias.json();
+
+  const p = dataPerfil?.response?.[0]?.player;
+  if (!p) return null;
+
+  // Los traspasos vienen agrupados por jugador, y adentro una lista por
+  // fecha. Se aplanan y se ordenan del más nuevo al más viejo, que es como
+  // se lee un historial.
+  const transferencias = (dataTransferencias?.response || [])
+    .flatMap((r) => r.transfers || [])
+    .map((t) => ({
+      fecha: t.date || null,
+      // "type" trae el monto cuando la operación fue con dinero ("€ 2.5M"),
+      // o "Free"/"Loan" cuando no. Se pasa tal cual: traducirlo acá sería
+      // adivinar formatos de una API que no los documenta del todo.
+      tipo: t.type || null,
+      desde: t.teams?.out?.name || null,
+      desdeId: t.teams?.out?.id ?? null,
+      hasta: t.teams?.in?.name || null,
+      hastaId: t.teams?.in?.id ?? null,
+    }))
+    .sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
+
+  return {
+    id: p.id,
+    nombre: p.name || [p.firstname, p.lastname].filter(Boolean).join(' '),
+    nombreCompleto: [p.firstname, p.lastname].filter(Boolean).join(' '),
+    foto: p.photo || null,
+    edad: p.age ?? null,
+    nacimiento: p.birth?.date || null,
+    paisNacimiento: p.birth?.country || null,
+    nacionalidad: p.nationality || null,
+    altura: p.height || null,
+    peso: p.weight || null,
+    posicion: p.position || null,
+    numero: p.number ?? null,
+    transferencias,
+  };
+}
+
+// ============================================================
+// FICHA DE CLUB
+// ============================================================
+// Una sola llamada: /fixtures?team=&last=5 ya trae los últimos 5 partidos
+// jugados con marcador y rival. El escudo y los datos del club vienen dentro
+// de esos mismos fixtures, así que no hace falta pedir /teams aparte y gastar
+// una segunda consulta.
+async function obtenerFichaClub(teamId) {
+  const resp = await fetch(`${BASE}/fixtures?team=${teamId}&last=5`, { headers });
+  const data = await resp.json();
+  const fixtures = data?.response || [];
+  if (fixtures.length === 0) return null;
+
+  const idNum = Number(teamId);
+  // El nombre y el escudo salen del primer partido: en todos aparece el
+  // equipo, sea de local o de visita.
+  const primero = fixtures[0];
+  const esLocalEnPrimero = primero.teams?.home?.id === idNum;
+  const propio = esLocalEnPrimero ? primero.teams?.home : primero.teams?.away;
+
+  const partidos = fixtures.map((fx) => {
+    const esLocal = fx.teams?.home?.id === idNum;
+    const golesPropios = esLocal ? fx.goals?.home : fx.goals?.away;
+    const golesRival = esLocal ? fx.goals?.away : fx.goals?.home;
+    const rival = esLocal ? fx.teams?.away : fx.teams?.home;
+    // Resultado desde el punto de vista de ESTE club: V / E / P. Calcularlo
+    // acá y no en el frontend evita repetir la lógica de "¿era local?" en
+    // cada lugar donde se muestre.
+    let resultado = null;
+    if (golesPropios != null && golesRival != null) {
+      resultado = golesPropios > golesRival ? 'V' : golesPropios < golesRival ? 'P' : 'E';
+    }
+    return {
+      fecha: fx.fixture?.date || null,
+      estado: fx.fixture?.status?.short || null,
+      competencia: fx.league?.name || null,
+      esLocal,
+      rival: rival?.name || null,
+      rivalId: rival?.id ?? null,
+      golesPropios: golesPropios ?? null,
+      golesRival: golesRival ?? null,
+      resultado,
+    };
+  }).sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
+
+  return {
+    id: idNum,
+    nombre: propio?.name || '',
+    escudo: propio?.logo || null,
+    partidos,
+  };
+}
+
+module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture, obtenerFichaJugador, obtenerFichaClub };

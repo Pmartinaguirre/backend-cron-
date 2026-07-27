@@ -24,8 +24,14 @@ async function rutaDetallePartido(req, res) {
     return res.status(400).json({ error: 'Falta el parámetro "fixtureId".' });
   }
 
+  // &refrescar=1 salta la caché. Hace falta cada vez que se agrega un campo
+  // nuevo al detalle (ids de jugador, grid, etc.): los partidos ya
+  // terminados quedan guardados 6 horas con el formato VIEJO, así que
+  // desplegar el backend no alcanza para verlos actualizados. Mismo
+  // mecanismo que ya tiene /posiciones-liga.
+  const forzar = req.query.refrescar === '1';
   const enCache = cache.get(String(fixtureId));
-  if (enCache && enCache.expira > Date.now()) {
+  if (!forzar && enCache && enCache.expira > Date.now()) {
     return res.json({ ...enCache.datos, deCache: true });
   }
 
