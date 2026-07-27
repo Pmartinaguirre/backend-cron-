@@ -218,8 +218,17 @@ async function obtenerDetalleFixture(fixtureId) {
     escudo: l.team?.logo || null,
     formacion: l.formation || null,
     entrenador: l.coach?.name || null,
+    // `grid` viene como "fila:columna" (ej. "1:1" el arquero, "2:3" el tercer
+    // defensor contando desde un costado). Es lo que permite dibujar la
+    // alineación sobre una cancha en vez de listarla en texto: el string de
+    // formación ("4-4-2") dice cuántos van en cada línea pero no ubica a
+    // nadie, y hay esquemas donde no alcanza (un 4-2-3-1 con un enganche
+    // corrido, por ejemplo). API-Football no siempre lo manda —en ligas
+    // chicas suele venir null—, así que el frontend cae al string de
+    // formación cuando falta.
     titulares: (l.startXI || []).map((x) => ({
       nombre: x.player?.name || '', numero: x.player?.number ?? null, posicion: x.player?.pos || null,
+      grid: x.player?.grid || null,
     })),
     suplentes: (l.substitutes || []).map((x) => ({
       nombre: x.player?.name || '', numero: x.player?.number ?? null, posicion: x.player?.pos || null,

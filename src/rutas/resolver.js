@@ -15,6 +15,7 @@
 // lógica está duplicada a mano y hay que mantenerla igual en ambos lados.
 const { supabase } = require('../supabaseClient');
 const { obtenerEstadoFixture } = require('../apiFootball');
+const { filtrarPendientes, partidosAbandonados } = require('../partidosPendientes');
 const {
   cuotaDelResultado,
   calcularDiamantesPorCuota,
@@ -85,7 +86,11 @@ async function rutaResolver(req, res) {
   const { data: partidos, error } = await supabase
     .from('desafios_mvp')
     .select(
-      'id, categoria, fixture_id_api, equipo_local, equipo_visitante, cuota_local, cuota_empate, cuota_visita, resultado_oficial, goles_local_oficial, fecha_expiracion'
+      // estado_partido es imprescindible acá: filtrarPendientes lo usa para
+      // descartar los partidos cancelados/abandonados. Antes no se pedía, y
+      // por eso este endpoint no tenía forma de saber que un partido ya no
+      // se iba a jugar nunca.
+      'id, categoria, fixture_id_api, equipo_local, equipo_visitante, cuota_local, cuota_empate, cuota_visita, resultado_oficial, goles_local_oficial, fecha_expiracion, estado_partido'
     )
     .in('categoria', [4, 5])
     .eq('esta_activo', true)
@@ -97,11 +102,21 @@ async function rutaResolver(req, res) {
     return res.status(500).json({ error: error.message });
   }
 
-  const pendientes = (partidos || []).filter((p) =>
-    Number(p.categoria) === 5 ? !p.resultado_oficial : p.goles_local_oficial == null
-  );
+  // Antes este filtro era solo "todavía no tiene resultado oficial", sin mirar
+  // el estado ni la antigüedad. Con eso, cada partido postergado o cancelado
+  // se quedaba en la lista de forma indefinida y consumía una llamada a
+  // API-Football en cada corrida del cron, para siempre. Ahora el criterio es
+  // el mismo que usa /vivo (ver src/partidosPendientes.js).
+  const pendientes = filtrarPendientes(partidos);
+  const abandonados = partidosAbandonados(partidos);
 
-  const resultado = { revisados: pendientes.length, resueltos: 0, todaviaJugando: 0, errores: [] };
+  const resultado = {
+    revisados: pendientes.length,
+    resueltos: 0,
+    todaviaJugando: 0,
+    abandonados,
+    errores: [],
+  };
 
   for (const partido of pendientes) {
     try {

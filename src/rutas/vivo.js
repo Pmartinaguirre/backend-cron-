@@ -6,6 +6,7 @@
 // corre aparte y sí puede ser menos frecuente (cada 5-15 min alcanza).
 const { supabase } = require('../supabaseClient');
 const { obtenerEstadoFixture } = require('../apiFootball');
+const { filtrarPendientes, partidosAbandonados } = require('../partidosPendientes');
 
 async function rutaVivo(req, res) {
   const ahoraISO = new Date().toISOString();
@@ -23,21 +24,21 @@ async function rutaVivo(req, res) {
     return res.status(500).json({ error: error.message });
   }
 
-  // Filtra en memoria (ojo: NO se puede hacer ".neq('estado_partido','FT')"
-  // en la consulta de arriba porque en SQL "columna <> 'FT'" excluye las
-  // filas con NULL, y los partidos recién activados todavía no tienen
-  // estado_partido puesto — quedarían afuera para siempre) los que:
-  //  - ya vimos terminados (estado_partido === 'FT'), no vale la pena
-  //    seguir gastando consultas en ellos, y
-  //  - los que ya están resueltos de verdad (Cat.5: resultado_oficial;
-  //    Cat.4: goles_local_oficial) — si /resolver ya los cerró, tampoco
-  //    hace falta seguir actualizando su marcador en vivo.
-  const pendientes = (partidos || []).filter((p) => {
-    if (p.estado_partido === 'FT') return false;
-    return Number(p.categoria) === 5 ? !p.resultado_oficial : p.goles_local_oficial == null;
-  });
+  // El criterio de "a quién todavía vale la pena preguntarle" vive en
+  // src/partidosPendientes.js, compartido con /resolver — ver ahí el detalle
+  // de por qué un partido postergado se quedaba consultando para siempre.
+  const pendientes = filtrarPendientes(partidos);
+  const abandonados = partidosAbandonados(partidos);
 
-  const resultado = { revisados: pendientes.length, actualizados: 0, errores: [] };
+  const resultado = {
+    revisados: pendientes.length,
+    actualizados: 0,
+    // Se reportan en la respuesta del cron para que un partido mal vinculado
+    // no desaparezca en silencio: si esta lista crece, hay algo que revisar
+    // a mano en el Admin.
+    abandonados,
+    errores: [],
+  };
 
   for (const partido of pendientes) {
     try {
