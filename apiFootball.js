@@ -175,7 +175,17 @@ async function obtenerPosicionesDeLiga(leagueId, season) {
     })),
   }));
 
-  return { liga: league.name, logo: league.logo, temporada: league.season, grupos };
+  // pais/bandera: para el encabezado de la pantalla de competencia en la app
+  // (escudo de la liga + bandera del país). Vienen gratis en la misma
+  // respuesta de standings, no cuesta ninguna llamada extra.
+  return {
+    liga: league.name,
+    logo: league.logo,
+    pais: league.country || null,
+    bandera: league.flag || null,
+    temporada: league.season,
+    grupos,
+  };
 }
 
 // ---------- Detalle completo de un partido (usado por /detalle-partido) ----------
