@@ -69,7 +69,15 @@ function equipoEnTierA(nombreEquipo, listaTierA) {
 
 async function rutaCrearPartidos(req, res) {
   const ahora = new Date();
-  const limite = new Date(ahora.getTime() + DIAS_ANTICIPACION * 24 * 60 * 60 * 1000);
+  // El día +7 entra COMPLETO, hasta las 23:59:59. Antes el límite era
+  // "ahora + 7×24h", que corta a la hora a la que corre el cron: corriendo un
+  // martes a las 09:00, un partido del lunes siguiente a las 21:15 quedaba
+  // fuera y recién entraba al día siguiente. La regla acordada es "hoy martes
+  // ve hasta el lunes entero" — mismo fix inclusive que ya tiene la ventana
+  // del frontend (VENTANA_PARTIDOS_DIAS en sementomvp.jsx).
+  const limite = new Date(ahora);
+  limite.setDate(limite.getDate() + DIAS_ANTICIPACION);
+  limite.setHours(23, 59, 59, 999);
 
   // Trae TODOS los equipos Tier A de una sola vez y los agrupa por
   // competencia (mismo shape que usa el frontend: { [competencia]: [equipo, ...] }).
@@ -84,7 +92,12 @@ async function rutaCrearPartidos(req, res) {
     tierAPorCompetencia[e.competencia].push(e.equipo);
   });
 
-  const resultadoGeneral = { porLiga: {}, totalCreados: 0, errores: [] };
+  // `version` sube a mano con cada cambio de este endpoint. Su única función
+  // es poder mirar la respuesta del cron y saber SI EL DEPLOY REALMENTE
+  // CORRIÓ: en la depuración del filtro Tier A se perdió tiempo sin poder
+  // distinguir "el fix no funciona" de "Render sigue sirviendo el código
+  // viejo".
+  const resultadoGeneral = { version: 'tier-v3-asimetrico', porLiga: {}, totalCreados: 0, errores: [] };
 
   for (const { competencia, leagueId } of LIGAS) {
     const listaTierA = tierAPorCompetencia[competencia] || [];
@@ -93,9 +106,18 @@ async function rutaCrearPartidos(req, res) {
     // saltado por Tier A) — ninguno de los dos bloquea nada, son informativos.
     const resumenLiga = {
       modo: modoDeCompetencia(competencia),
+      // Cuántos equipos tiene configurados la lista Tier A de esta liga. Si
+      // acá dice 0 en una liga en modo tier_a, TODO se va a saltar y la causa
+      // es la lista, no el matcher — este número existe para distinguir esos
+      // dos diagnósticos de un vistazo.
+      equiposTierAConfigurados: listaTierA.length,
       revisados: 0,
       creados: 0,
       saltadosPorTierA: 0,
+      // Los primeros saltados POR NOMBRE, tal como los escribe la API. Para
+      // depurar el matcher hay que ver los nombres reales que no calzaron —
+      // sin esto, "saltadosPorTierA: 24" obliga a adivinar cuáles fueron.
+      ejemplosSaltadosPorTierA: [],
       saltadosPorYaExistente: 0,
       saltadosPorEquiposSinDefinir: 0,
     };
@@ -163,17 +185,33 @@ async function rutaCrearPartidos(req, res) {
         // partido primero hay que tenerlo.
         const modo = modoDeCompetencia(competencia);
         if (!esFinal && modo === MODO_TIER_A) {
-          // Exige Tier A configurado Y ambos equipos en la lista. Si la
-          // competencia no tiene Tier A cargado todavía, no se trae nada de
-          // temporada regular (para no traer la liga completa por accidente
-          // si se olvidó configurar la lista).
+          // Si la competencia no tiene Tier A cargado todavía, no se trae
+          // nada de temporada regular (para no traer la liga completa por
+          // accidente si se olvidó configurar la lista).
           if (listaTierA.length === 0) {
             resumenLiga.saltadosPorTierA++;
+            if (resumenLiga.ejemplosSaltadosPorTierA.length < 5) {
+              resumenLiga.ejemplosSaltadosPorTierA.push(`${equipoLocal} vs ${equipoVisita} (lista Tier A vacía)`);
+            }
             continue;
           }
-          const ambosTierA = equipoEnTierA(equipoLocal, listaTierA) && equipoEnTierA(equipoVisita, listaTierA);
-          if (!ambosTierA) {
+          // BASTA CON QUE **UNO** DE LOS DOS SEA TIER A.
+          //
+          // Antes se exigían LOS DOS (&&), y esa era la contradicción que
+          // dejaba la liga argentina a medias: la definición de "partido
+          // destacado" en toda la app es "juega ALGUNO de los equipos Tier A"
+          // (ver esPartidoDestacado en sementomvp.jsx, que usa .some()). El
+          // frontend filtraba con esa regla, pero este endpoint creaba con la
+          // otra: un San Lorenzo vs Gimnasia (Mendoza) era destacado para la
+          // app... sobre un partido que nunca llegó a existir. De 11 partidos
+          // Tier A de una semana se creaban solo los 3 en que se cruzaban dos
+          // grandes entre sí.
+          const algunoTierA = equipoEnTierA(equipoLocal, listaTierA) || equipoEnTierA(equipoVisita, listaTierA);
+          if (!algunoTierA) {
             resumenLiga.saltadosPorTierA++;
+            if (resumenLiga.ejemplosSaltadosPorTierA.length < 5) {
+              resumenLiga.ejemplosSaltadosPorTierA.push(`${equipoLocal} vs ${equipoVisita}`);
+            }
             continue;
           }
         }
