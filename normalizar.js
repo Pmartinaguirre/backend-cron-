@@ -53,48 +53,56 @@ const PALABRAS_RELLENO = new Set([
   'club', 'fc', 'cf', 'ca', 'cd', 'afc', 'csd',
 ]);
 
-// TODAS las palabras del nombre más corto tienen que encontrar una palabra
-// compatible en el nombre más largo (exacta o abreviatura-prefijo). Las
-// palabras "de más" del nombre largo (ej. "de" en "Estudiantes de la Plata")
-// no molestan — no se exige que TODO calce en ambos sentidos, solo que el
-// nombre corto esté completamente cubierto por el largo.
+// TODAS las palabras de `cortas` tienen que encontrar una palabra compatible
+// en `largas` (exacta o abreviatura-prefijo), con al menos UNA coincidencia
+// exacta de respaldo (ej. "Ajax" no debe hacer match con "A. Italiano" solo
+// porque "a" es prefijo de "ajax" — ahí no hay ninguna palabra exacta).
 //
-// DOS protecciones contra falsos positivos:
-//
-// 1. No basta con que TODO calce si TODO calce es solo por abreviatura (ej.
-//    "Ajax" no debe hacer match con "A. Italiano" solo porque "a" es prefijo
-//    de "ajax"). Se exige al menos UNA coincidencia exacta de respaldo.
-//
-// 2. Las palabras del nombre LARGO que quedaron sin pareja tienen que ser
-//    relleno (artículos, "club", siglas). Sin esta regla, "Independiente"
-//    quedaba totalmente cubierto por "Independiente Rivadavia" —con
-//    coincidencia exacta y todo— y el matcher daba por Tier A a un club que
-//    es OTRO. Mismo caso: "Gimnasia" contra las dos Gimnasias, "Boca" contra
-//    "Boca Unidos". La palabra sobrante ("rivadavia") es exactamente lo que
-//    distingue a los clubes, así que si sobra algo que no es relleno, NO son
-//    el mismo equipo.
-//
-//    Consecuencia deliberada: en la lista Tier A los equipos van con su
-//    nombre completo tal como los escribe API-Football (el selector del
-//    panel de Admin ya los carga así). "Racing" sigue calzando con "Racing
-//    Club" porque "club" es relleno; "Talleres" a secas ya NO calza con
-//    "Talleres Cordoba" — se elige del selector y listo.
-function cubreTodasLasPalabras(cortas, largas) {
+// `sobrantesLibres` controla qué pasa con las palabras de `largas` que
+// quedaron sin pareja:
+//   true  → dan lo mismo (puede sobrar cualquier cosa)
+//   false → tienen que ser relleno (artículos, "club", siglas)
+function cubreTodasLasPalabras(cortas, largas, sobrantesLibres) {
   if (!cortas.every((t1) => largas.some((t2) => tokenCompatible(t1, t2)))) return false;
   if (!cortas.some((t1) => largas.includes(t1))) return false;
+  if (sobrantesLibres) return true;
   const sobrantes = largas.filter((t2) => !cortas.some((t1) => tokenCompatible(t1, t2)));
   return sobrantes.every((t2) => PALABRAS_RELLENO.has(t2));
 }
 
-function esMismoEquipo(nombreA, nombreB) {
-  const ta = tokens(nombreA);
-  const tb = tokens(nombreB);
-  if (ta.length === 0 || tb.length === 0) return false;
-  // Se prueba en los dos sentidos (no se sabe de antemano cuál de los dos
-  // nombres es el "abreviado") — si cualquiera de los dos queda totalmente
-  // cubierto por el otro (con al menos una palabra exacta de respaldo), se
-  // considera el mismo equipo.
-  return cubreTodasLasPalabras(ta, tb) || cubreTodasLasPalabras(tb, ta);
+// LA REGLA ES ASIMÉTRICA, y esa asimetría es la corrección de dos bugs que
+// tiraban para lados opuestos. Los dos nombres NO son intercambiables:
+//
+//   nombreLista → lo escribió el ADMIN a mano en "Equipos Tier A"
+//   nombreApi   → lo dice API-Football en el fixture
+//
+// 1. Lo que SOBRA EN LA LISTA es inofensivo. Si el admin escribió "Racing
+//    Club de Avellaneda" o "Independiente Avellaneda", las palabras extra
+//    son detalle suyo — el club es el mismo. La versión anterior (v2) exigía
+//    relleno en AMBOS lados, y con eso ningún nombre escrito a mano con una
+//    palabra de más volvía a calzar: se cayeron las 10 ligas de una sola vez
+//    (saltadosPorTierA = todos los candidatos, totalCreados = 0).
+//
+// 2. Lo que SOBRA EN EL NOMBRE DE LA API es sospechoso. "Rivadavia" en
+//    "Independiente Rivadavia" es exactamente lo que lo distingue de
+//    "Independiente": si la API agrega una palabra con contenido que la
+//    lista no tiene, lo más probable es que sea OTRO club. Solo se toleran
+//    sobras de relleno ("club", "fc", artículos) — así "Racing" del admin
+//    sigue calzando con "Racing Club" de la API, pero "Boca" no calza con
+//    "Boca Unidos" ni "Independiente" con "Independiente Rivadavia".
+//
+// Las abreviaturas ("U. Catolica" ↔ "Universidad Catolica") funcionan igual
+// que siempre, en las dos direcciones.
+function esMismoEquipo(nombreLista, nombreApi) {
+  const tl = tokens(nombreLista);
+  const ta = tokens(nombreApi);
+  if (tl.length === 0 || ta.length === 0) return false;
+  // (a) Todo lo que dice la API está en el nombre de la lista → mismo club,
+  //     sin importar cuánto detalle extra haya escrito el admin.
+  if (cubreTodasLasPalabras(ta, tl, true)) return true;
+  // (b) Todo lo de la lista está en el nombre de la API → mismo club SOLO si
+  //     lo que le sobra a la API es relleno.
+  return cubreTodasLasPalabras(tl, ta, false);
 }
 
 module.exports = { normalizar, esMismoEquipo };
