@@ -92,7 +92,12 @@ async function rutaCrearPartidos(req, res) {
     tierAPorCompetencia[e.competencia].push(e.equipo);
   });
 
-  const resultadoGeneral = { porLiga: {}, totalCreados: 0, errores: [] };
+  // `version` sube a mano con cada cambio de este endpoint. Su única función
+  // es poder mirar la respuesta del cron y saber SI EL DEPLOY REALMENTE
+  // CORRIÓ: en la depuración del filtro Tier A se perdió tiempo sin poder
+  // distinguir "el fix no funciona" de "Render sigue sirviendo el código
+  // viejo".
+  const resultadoGeneral = { version: 'tier-v3-asimetrico', porLiga: {}, totalCreados: 0, errores: [] };
 
   for (const { competencia, leagueId } of LIGAS) {
     const listaTierA = tierAPorCompetencia[competencia] || [];
@@ -101,9 +106,18 @@ async function rutaCrearPartidos(req, res) {
     // saltado por Tier A) — ninguno de los dos bloquea nada, son informativos.
     const resumenLiga = {
       modo: modoDeCompetencia(competencia),
+      // Cuántos equipos tiene configurados la lista Tier A de esta liga. Si
+      // acá dice 0 en una liga en modo tier_a, TODO se va a saltar y la causa
+      // es la lista, no el matcher — este número existe para distinguir esos
+      // dos diagnósticos de un vistazo.
+      equiposTierAConfigurados: listaTierA.length,
       revisados: 0,
       creados: 0,
       saltadosPorTierA: 0,
+      // Los primeros saltados POR NOMBRE, tal como los escribe la API. Para
+      // depurar el matcher hay que ver los nombres reales que no calzaron —
+      // sin esto, "saltadosPorTierA: 24" obliga a adivinar cuáles fueron.
+      ejemplosSaltadosPorTierA: [],
       saltadosPorYaExistente: 0,
       saltadosPorEquiposSinDefinir: 0,
     };
@@ -176,6 +190,9 @@ async function rutaCrearPartidos(req, res) {
           // accidente si se olvidó configurar la lista).
           if (listaTierA.length === 0) {
             resumenLiga.saltadosPorTierA++;
+            if (resumenLiga.ejemplosSaltadosPorTierA.length < 5) {
+              resumenLiga.ejemplosSaltadosPorTierA.push(`${equipoLocal} vs ${equipoVisita} (lista Tier A vacía)`);
+            }
             continue;
           }
           // BASTA CON QUE **UNO** DE LOS DOS SEA TIER A.
@@ -192,6 +209,9 @@ async function rutaCrearPartidos(req, res) {
           const algunoTierA = equipoEnTierA(equipoLocal, listaTierA) || equipoEnTierA(equipoVisita, listaTierA);
           if (!algunoTierA) {
             resumenLiga.saltadosPorTierA++;
+            if (resumenLiga.ejemplosSaltadosPorTierA.length < 5) {
+              resumenLiga.ejemplosSaltadosPorTierA.push(`${equipoLocal} vs ${equipoVisita}`);
+            }
             continue;
           }
         }
