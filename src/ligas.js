@@ -28,8 +28,15 @@ const LIGAS = [
   { competencia: 'Copa Libertadores', leagueId: 13, modo: MODO_COMPLETA },
   { competencia: 'Copa Sudamericana', leagueId: 11, modo: MODO_COMPLETA },
   { competencia: 'Primera División Chile', leagueId: 265, modo: MODO_COMPLETA },
-
-  { competencia: 'Primera División Argentina', leagueId: 128, modo: MODO_TIER_A },
+  // Argentina pasó a COMPLETA (igual que Chile): se crean TODOS los partidos
+  // de cada fecha, y el recorte a "solo grandes" es una decisión de cada
+  // grupo (modo_competencias) o del jugador (filtro personal) — filtra lo que
+  // se MUESTRA, no lo que existe. Para poder ocultar un partido primero hay
+  // que tenerlo.
+  // OJO: al cambiar una liga a completa hay que agregarla también a
+  // COMPETENCIAS_CON_MODO en MisGrupos.jsx, si no el grupo no tiene dónde
+  // elegir entre "Completa" y "Solo grandes".
+  { competencia: 'Primera División Argentina', leagueId: 128, modo: MODO_COMPLETA },
   { competencia: 'Serie A Italia', leagueId: 135, modo: MODO_TIER_A },
   { competencia: 'LALIGA España', leagueId: 140, modo: MODO_TIER_A },
   { competencia: 'Premier League Inglaterra', leagueId: 39, modo: MODO_TIER_A },
