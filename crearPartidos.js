@@ -138,13 +138,36 @@ async function rutaCrearPartidos(req, res) {
       }
 
       // Dedupe: qué fixture_id_api de ESTOS candidatos ya existen en la BD.
+      // Los ids se normalizan a String en LOS DOS lados: si la columna es
+      // texto y el candidato es número (o viceversa), el Set no matchea y
+      // el partido se crea de nuevo — una de las fuentes de duplicados.
       const idsCandidatos = candidatos.map((fx) => fx.fixture.id);
       const { data: yaExistentes, error: errExistentes } = await supabase
         .from('desafios_mvp')
         .select('fixture_id_api')
         .in('fixture_id_api', idsCandidatos);
       if (errExistentes) throw errExistentes;
-      const idsYaExistentes = new Set((yaExistentes || []).map((d) => d.fixture_id_api));
+      const idsYaExistentes = new Set((yaExistentes || []).map((d) => String(d.fixture_id_api)));
+
+      // SEGUNDO candado, por equipos+día (fix duplicados tipo "San Lorenzo
+      // vs Gimnasia dos veces, una Cat.4 y otra Cat.5"): si un desafío del
+      // mismo cruce el mismo día YA existe en esta competencia — aunque
+      // tenga otro fixture_id o ninguno (creado a mano, o un fixture que la
+      // API re-emitió con id nuevo al reprogramarlo) — no se crea otro.
+      const normEquipo = (s) => String(s || '')
+        .normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
+      const claveCruce = (local, visita, fechaISO) =>
+        `${normEquipo(local)}|${normEquipo(visita)}|${String(fechaISO || '').slice(0, 10)}`;
+      const { data: existentesLiga, error: errExistentesLiga } = await supabase
+        .from('desafios_mvp')
+        .select('equipo_local, equipo_visitante, fecha_expiracion')
+        .eq('tema', competencia)
+        .gte('fecha_expiracion', ahora.toISOString())
+        .lte('fecha_expiracion', limite.toISOString());
+      if (errExistentesLiga) throw errExistentesLiga;
+      const crucesYaExistentes = new Set(
+        (existentesLiga || []).map((d) => claveCruce(d.equipo_local, d.equipo_visitante, d.fecha_expiracion))
+      );
 
       // Diagnóstico: nombres de ronda tal cual los devuelve API-Football
       // para esta liga en este lote — sirve para confirmar si el texto real
@@ -154,7 +177,13 @@ async function rutaCrearPartidos(req, res) {
 
       const filasNuevas = [];
       for (const fx of candidatos) {
-        if (idsYaExistentes.has(fx.fixture.id)) {
+        if (idsYaExistentes.has(String(fx.fixture.id))) {
+          resumenLiga.saltadosPorYaExistente++;
+          continue;
+        }
+        // Candado por equipos+día (ver arriba): mismo cruce, mismo día →
+        // ya existe, no importa con qué fixture_id quedó guardado.
+        if (crucesYaExistentes.has(claveCruce(fx.teams?.home?.name, fx.teams?.away?.name, fx.fixture?.date && new Date(fx.fixture.date).toISOString()))) {
           resumenLiga.saltadosPorYaExistente++;
           continue;
         }
@@ -246,6 +275,10 @@ async function rutaCrearPartidos(req, res) {
           fecha_expiracion: fechaISO,
           fixture_id_api: fx.fixture.id,
         });
+        // Y se anota al toque en el candado: si la API trae el mismo cruce
+        // dos veces EN ESTE MISMO LOTE (fixture re-emitido con otro id), la
+        // segunda pasada lo salta.
+        crucesYaExistentes.add(claveCruce(equipoLocal, equipoVisita, fechaISO));
       }
 
       if (filasNuevas.length > 0) {
