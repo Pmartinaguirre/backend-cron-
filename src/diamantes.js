@@ -62,6 +62,29 @@ function calcularDiamantesCat5(signoReal, desafio) {
   return cuota != null ? calcularDiamantesPorCuota(cuota) : DIAMANTES_BASE_SIN_CUOTA;
 }
 
+// Cat.4 SIN marcador exacto cargado (a pedido, bug reportado: un jugador
+// eligió "Local" en un partido Cat.4, ganó local, y cobró 0 diamantes
+// porque nunca cargó el "2-0"). Si solo eligió la dirección (L/E/V) y
+// acertó, cobra la BASE de esa cuota — sin los bonos de diferencia de gol
+// ni marcador exacto, que siguen exigiendo el número cargado. Copia exacta
+// de la misma función en sementomvp.jsx (ver nota de arriba).
+function calcularDiamantesCat4PorDireccion(signoPred, signoReal, desafio) {
+  if (signoPred == null || signoReal == null || signoPred !== signoReal) return 0;
+  const cuota = cuotaDelResultado(desafio, signoReal);
+  return cuota != null ? calcularDiamantesPorCuota(cuota) : DIAMANTES_BASE_SIN_CUOTA;
+}
+
+// Traduce el texto LEV guardado en `eleccion` ("Gana <equipo_local>" /
+// "Empate" / "Gana <equipo_visitante>") al mismo signo que usa
+// cuotaDelResultado. Copia exacta de signoDeResultadoLEV en sementomvp.jsx.
+function signoDeResultadoLEV(equipoLocal, equipoVisitante, resultadoLEV) {
+  if (!resultadoLEV) return null;
+  if (resultadoLEV === 'Empate') return 0;
+  if (resultadoLEV === `Gana ${equipoLocal}`) return 1;
+  if (resultadoLEV === `Gana ${equipoVisitante}`) return -1;
+  return null;
+}
+
 // Convierte "2-1" (como se guarda en respuesta_extra, ver parsearMarcador en
 // sementomvp.jsx) en [2, 1], o null si el texto no tiene el formato esperado.
 function parsearMarcador(texto) {
@@ -91,8 +114,10 @@ module.exports = {
   calcularDiamantesPorCuota,
   cuotaDelResultado,
   calcularDiamantesCat4,
+  calcularDiamantesCat4PorDireccion,
   calcularDiamantesCat5,
   parsearMarcador,
   construirTextoLEV,
   signoDeGoles,
+  signoDeResultadoLEV,
 };

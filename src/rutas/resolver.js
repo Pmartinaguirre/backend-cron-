@@ -20,9 +20,11 @@ const {
   cuotaDelResultado,
   calcularDiamantesPorCuota,
   calcularDiamantesCat4,
+  calcularDiamantesCat4PorDireccion,
   parsearMarcador,
   construirTextoLEV,
   signoDeGoles,
+  signoDeResultadoLEV,
 } = require('../diamantes');
 
 const DIAMANTES_BASE_SIN_CUOTA = 120; // mismo fallback que en sementomvp.jsx
@@ -61,15 +63,22 @@ async function resolverCat4(partido, golesLocal, golesVisita) {
 
   const { data: predicciones, error } = await supabase
     .from('predicciones_mvp')
-    .select('usuario_id, respuesta_extra')
+    .select('usuario_id, eleccion, respuesta_extra')
     .eq('desafio_id', partido.id);
   if (error) throw error;
+
+  const signoReal = signoDeGoles(golesLocal, golesVisita);
 
   let pagados = 0;
   for (const p of predicciones || []) {
     const marcador = parsearMarcador(p.respuesta_extra);
-    if (!marcador) continue;
-    const monto = calcularDiamantesCat4(marcador[0], marcador[1], golesLocal, golesVisita, partido);
+    // Sin marcador exacto pero con L/E/V elegido (a pedido, bug reportado:
+    // un jugador acertó "gana local" en Cat.4 y cobró 0 porque nunca cargó
+    // el marcador exacto) — ahora paga la base por acertar la dirección en
+    // vez de saltarlo entero.
+    const monto = marcador
+      ? calcularDiamantesCat4(marcador[0], marcador[1], golesLocal, golesVisita, partido)
+      : calcularDiamantesCat4PorDireccion(signoDeResultadoLEV(partido.equipo_local, partido.equipo_visitante, p.eleccion), signoReal, partido);
     if (monto <= 0) continue;
     const { data: u } = await supabase.from('usuarios').select('puntos').eq('id', p.usuario_id).single();
     if (u) {

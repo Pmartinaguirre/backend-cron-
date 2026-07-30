@@ -3,7 +3,7 @@
 // GET /forma?ids=1-2-3    — últimos 5 resultados de varios equipos de una vez.
 //                         Solo lectura, la llama el navegador.
 const { supabase } = require('../supabaseClient');
-const { obtenerFichaClub } = require('../apiFootball');
+const { obtenerFichaClub, obtenerPerfilBasicoJugador } = require('../apiFootball');
 
 const API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY;
 const BASE = 'https://v3.football.api-sports.io';
@@ -139,4 +139,43 @@ async function rutaForma(req, res) {
   res.json({ forma });
 }
 
-module.exports = { rutaBackfillEquipos, rutaForma };
+// ============================================================
+// /jugadores-perfil?ids=1-2-3
+// ============================================================
+// Devuelve, por jugador, solo edad + nacionalidad — para los filtros de
+// "nacionalidad" y "edad" en la cancha de Alineaciones (a pedido). La
+// alineación en sí (/fixtures) no trae ese dato, solo /players/profiles,
+// jugador por jugador — por eso esto se cachea 30 días en
+// obtenerPerfilBasicoJugador (la edad de un jugador no cambia entre
+// partidos) y se pide en paralelo acá.
+//
+// Tope de 40 ids por llamada por lo mismo que en /forma: una alineación
+// completa (titulares + banca de ambos equipos) son ~36-40 jugadores, así
+// que alcanza para pedirlos todos de una vez sin abrir la puerta a abuso.
+const MAX_JUGADORES = 40;
+
+async function rutaPerfilesJugadores(req, res) {
+  const crudo = String(req.query.ids || '').trim();
+  if (!crudo) return res.status(400).json({ error: 'Falta el parámetro "ids".' });
+
+  const ids = [...new Set(
+    crudo.split('-').map((x) => parseInt(x, 10)).filter((n) => Number.isFinite(n) && n > 0)
+  )].slice(0, MAX_JUGADORES);
+
+  if (ids.length === 0) return res.status(400).json({ error: 'Ningún id válido en "ids".' });
+
+  const perfiles = {};
+  await Promise.all(ids.map(async (id) => {
+    try {
+      const p = await obtenerPerfilBasicoJugador(id);
+      perfiles[id] = p ? { edad: p.edad, nacionalidad: p.nacionalidad } : null;
+    } catch (e) {
+      console.error(`[/jugadores-perfil] Error con el jugador ${id}:`, e);
+      perfiles[id] = null;
+    }
+  }));
+
+  res.json({ perfiles });
+}
+
+module.exports = { rutaBackfillEquipos, rutaForma, rutaPerfilesJugadores };

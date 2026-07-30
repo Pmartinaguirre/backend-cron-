@@ -175,7 +175,17 @@ async function obtenerPosicionesDeLiga(leagueId, season) {
     })),
   }));
 
-  return { liga: league.name, logo: league.logo, temporada: league.season, grupos };
+  // pais/bandera: para el encabezado de la pantalla de competencia en la app
+  // (escudo de la liga + bandera del país). Vienen gratis en la misma
+  // respuesta de standings, no cuesta ninguna llamada extra.
+  return {
+    liga: league.name,
+    logo: league.logo,
+    pais: league.country || null,
+    bandera: league.flag || null,
+    temporada: league.season,
+    grupos,
+  };
 }
 
 // ---------- Detalle completo de un partido (usado por /detalle-partido) ----------
@@ -337,6 +347,44 @@ async function obtenerFichaJugador(playerId) {
 }
 
 // ============================================================
+// PERFIL BÁSICO DE JUGADOR (solo edad + nacionalidad, en lote)
+// ============================================================
+// Para los filtros de "nacionalidad" y "edad" sobre la cancha (a pedido):
+// la alineación de /fixtures NO trae ni edad ni nacionalidad (armarJugador
+// más arriba solo tiene id/nombre/número/posición/grid) — ese dato solo
+// sale de /players/profiles, UN jugador a la vez. Con 18-20 jugadores por
+// equipo eso son hasta 40 llamadas por partido, así que se cachea agresivo
+// (30 días: la edad de un jugador no cambia de un partido a otro) y se
+// pide en paralelo — ver rutaPerfilesJugadores en rutas/equiposIds.js.
+const CACHE_PERFIL_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_JUGADORES_EN_CACHE = 3000;
+const cachePerfilesJugador = new Map(); // playerId -> { datos, expira }
+
+async function obtenerPerfilBasicoJugador(playerId) {
+  const clave = String(playerId);
+  const enCache = cachePerfilesJugador.get(clave);
+  if (enCache && enCache.expira > Date.now()) return enCache.datos;
+
+  const resp = await fetch(`${BASE}/players/profiles?player=${playerId}`, { headers });
+  const data = await resp.json();
+  const p = data?.response?.[0]?.player;
+  if (!p) return null;
+
+  const perfil = {
+    id: p.id,
+    edad: p.age ?? null,
+    nacionalidad: p.nationality || null,
+  };
+
+  if (cachePerfilesJugador.size >= MAX_JUGADORES_EN_CACHE) {
+    cachePerfilesJugador.delete(cachePerfilesJugador.keys().next().value);
+  }
+  cachePerfilesJugador.set(clave, { datos: perfil, expira: Date.now() + CACHE_PERFIL_MS });
+
+  return perfil;
+}
+
+// ============================================================
 // FICHA DE CLUB
 // ============================================================
 // Una sola llamada: /fixtures?team=&last=5 ya trae los últimos 5 partidos
@@ -359,9 +407,24 @@ async function obtenerFichaClub(teamId) {
   const enCache = cacheClubes.get(clave);
   if (enCache && enCache.expira > Date.now()) return enCache.datos;
 
-  const resp = await fetch(`${BASE}/fixtures?team=${teamId}&last=5`, { headers });
+  // Se pide de a 15 (no 5): "last=5" de API-Football cuenta por fecha de
+  // partido, así que si hay uno en vivo o recién terminado sin resultado
+  // todavía cargado, entra en el lote y desplaza a uno de verdad jugado.
+  // Acá abajo se filtra a solo los FINALIZADOS y recién ahí se cortan los
+  // últimos 5 reales.
+  const resp = await fetch(`${BASE}/fixtures?team=${teamId}&last=15`, { headers });
   const data = await resp.json();
-  const fixtures = data?.response || [];
+  const todosFixtures = data?.response || [];
+  if (todosFixtures.length === 0) return null;
+
+  // Solo partidos ya TERMINADOS (FT = tiempo reglamentario, AET = alargue,
+  // PEN = penales). Uno en vivo (1H/2H/HT/ET/LIVE/BT/P) o programado (NS,
+  // TBD) no es un resultado real todavía y no debe aparecer en "Últimos 5".
+  const ESTADOS_FINALIZADO = new Set(['FT', 'AET', 'PEN']);
+  const fixtures = todosFixtures
+    .filter((fx) => ESTADOS_FINALIZADO.has(fx.fixture?.status?.short))
+    .sort((a, b) => String(b.fixture?.date || '').localeCompare(String(a.fixture?.date || '')))
+    .slice(0, 5);
   if (fixtures.length === 0) return null;
 
   const idNum = Number(teamId);
@@ -439,4 +502,4 @@ async function obtenerFichaClub(teamId) {
   return ficha;
 }
 
-module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture, obtenerFichaJugador, obtenerFichaClub };
+module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture, obtenerFichaJugador, obtenerFichaClub, obtenerPerfilBasicoJugador };
