@@ -17,7 +17,7 @@ const { rutaEnviarResumenMesa } = require('./src/rutas/enviarResumenMesa');
 const { rutaPosicionesLiga } = require('./src/rutas/posicionesLiga');
 const { rutaDetallePartido } = require('./src/rutas/detallePartido');
 const { rutaJugador, rutaClub } = require('./src/rutas/fichas');
-const { rutaBackfillEquipos, rutaForma } = require('./src/rutas/equiposIds');
+const { rutaBackfillEquipos, rutaForma, rutaPerfilesJugadores } = require('./src/rutas/equiposIds');
 
 const app = express();
 // Necesario para leer req.body en /invitar-a-grupo (POST con JSON) — las
@@ -83,6 +83,14 @@ app.get('/forma', (req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   next();
 }, rutaForma);
+
+// /jugadores-perfil: edad + nacionalidad de varios jugadores de una vez,
+// para los filtros de nacionalidad/edad sobre la cancha en Alineaciones.
+// Solo lectura, cacheado 30 días del lado del backend.
+app.get('/jugadores-perfil', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  next();
+}, rutaPerfilesJugadores);
 
 // /backfill-equipos: completa equipo_local_id / equipo_visita_id en los
 // partidos que se crearon antes de que se guardaran esos ids. Escribe en la
