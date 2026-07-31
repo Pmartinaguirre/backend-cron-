@@ -171,6 +171,15 @@ async function rutaCrearPartidos(req, res) {
       }
       resumenLiga.fixturesRecibidosDeLaApi = fixtures.length;
       resumenLiga.resultsApi = resultsApi;
+      // Diagnóstico: rango de fechas que USA el servidor para filtrar (para
+      // comparar contra las fechas reales de los fixtures a simple vista) +
+      // ejemplos de fixtures en estado NS SIN aplicar el filtro de rango, así
+      // se ve si el problema es el rango o el status.
+      resumenLiga.rangoUsado = { ahora: ahora.toISOString(), limite: limite.toISOString() };
+      resumenLiga.ejemplosFixturesNS = fixtures
+        .filter((fx) => fx.fixture?.status?.short === 'NS')
+        .slice(0, 3)
+        .map((fx) => fx.fixture?.date);
 
       // Solo fixtures dentro de la ventana de anticipación, todavía no
       // jugados (NS = Not Started).
