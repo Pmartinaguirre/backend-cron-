@@ -12,9 +12,19 @@
 //      semifinal, final, playoffs) se traen TODOS los partidos de esa fase,
 //      sin filtrar por Tier A, sea cual sea el modo. Se detecta solo, mirando
 //      el nombre de la fase que entrega API-Football (ver KEYWORDS_KNOCKOUT).
-//   3) De cada lote de partidos nuevos que se crean (Tier A + instancias
-//      finales incluidas), un ~25% sale al azar como Categoría 4
-//      (pronóstico de marcador exacto) — el resto, Categoría 5 (solo LEV).
+//   3) CAMBIO IMPORTANTE (a pedido): antes, de cada lote de partidos nuevos
+//      que se crean (Tier A + instancias finales incluidas), solo un ~25%
+//      salía al azar como Categoría 4 (pronóstico de marcador exacto) — el
+//      resto quedaba en Categoría 5 (solo LEV, sin marcador). Eso se
+//      eliminó por completo: TODO partido nuevo se crea ahora como
+//      Categoría 4, con marcador exacto SIEMPRE disponible. Lo que decide
+//      si un grupo particular le pide o no el marcador exacto a sus
+//      jugadores para una competencia dada ya no es este sorteo — es la
+//      configuración `modo_marcador` que el admin del grupo define en
+//      MisGrupos.jsx (mismo patrón que `modo_competencias`/Tier A), leída
+//      en tiempo de pantalla por sementomvp.jsx. Este endpoint ya no tiene
+//      que saber nada de eso: solo garantiza que el dato (marcador exacto)
+//      esté siempre disponible para quien lo quiera pedir.
 //
 // Mundial 2026 queda AFUERA de este proceso a propósito (ya se cargó
 // completo a mano, ver fixtures_mundial.sql).
@@ -34,15 +44,19 @@ const { LIGAS, TEMPORADA, modoDeCompetencia, MODO_TIER_A } = require('../ligas')
 // trae lo que ya está por jugarse pronto, y lo crea directo con
 // esta_activo = true.
 //
-// SIETE días, no diez: la unidad natural de este producto es la semana —
-// el jugador entra, resuelve la fecha completa y vuelve la semana siguiente.
-// Con una ventana más larga la lista se llena de partidos lejanos que nadie
-// pronostica todavía y que empujan hacia abajo los de este fin de semana.
+// CATORCE días (a pedido, antes 7): se amplió temporalmente para poder
+// probar el cambio de "marcador exacto siempre disponible" sin esperar a
+// que entre una fecha nueva sola — con 7 días no había partidos nuevos
+// que crear todavía. Las cuotas no son requisito para crear: si el
+// partido no tiene cuotas aún, se crea igual (las llena el cron /cuotas
+// aparte, ver nota de cabecera del archivo) — así que ampliar la ventana
+// no deja partidos "a medias".
 //
 // OJO: si en Render está definida la variable de entorno DIAS_ANTICIPACION,
 // ESA manda por sobre este valor. Si el cambio no se nota, revisa ahí.
-const DIAS_ANTICIPACION = Number(process.env.DIAS_ANTICIPACION) || 7;
-const PROBABILIDAD_CAT4 = 0.25;
+const DIAS_ANTICIPACION = Number(process.env.DIAS_ANTICIPACION) || 14;
+// PROBABILIDAD_CAT4 se eliminó (a pedido) — todo partido nuevo es ahora
+// Categoría 4 siempre, ver nota de cabecera del archivo.
 
 // Nombres de fase de API-Football que cuentan como "instancia final" — si
 // el texto de la ronda contiene alguna de estas palabras (sin importar
@@ -216,13 +230,18 @@ async function rutaCrearPartidos(req, res) {
           }
         }
 
-        const categoria = Math.random() < PROBABILIDAD_CAT4 ? 4 : 5;
+        // Categoría 4 siempre (a pedido) — ver nota de cabecera. tipo:'doble'
+        // es lo que hace que sementomvp.jsx le pida al jugador el marcador
+        // exacto como SEGUNDO paso después de elegir L/E/V (ver handleVotar,
+        // que decide el paso 2 mirando justo este campo) — con 'simple'
+        // quedaba SOLO en L/E/V aunque la categoría dijera "con marcador".
+        const categoria = 4;
         const fechaISO = new Date(fx.fixture.date).toISOString();
 
         filasNuevas.push({
           pregunta: `${equipoLocal} vs ${equipoVisita}`,
           subtitulo: subtituloFecha(fechaISO),
-          tipo: 'simple',
+          tipo: 'doble',
           categoria,
           tema: competencia,
           subtema: nombreRonda || 'Fecha',
