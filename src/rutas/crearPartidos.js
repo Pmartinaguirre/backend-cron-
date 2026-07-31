@@ -44,15 +44,18 @@ const { LIGAS, TEMPORADA, modoDeCompetencia, MODO_TIER_A } = require('../ligas')
 // trae lo que ya está por jugarse pronto, y lo crea directo con
 // esta_activo = true.
 //
-// VEINTIÚN días (a pedido, antes 7 y luego 14): la ventana se fue
-// ampliando para tener más fecha nueva disponible de entrada. Las cuotas
-// no son requisito para crear: si el partido no tiene cuotas aún, se crea
-// igual (las llena el cron /cuotas aparte, ver nota de cabecera del
-// archivo) — así que ampliar la ventana no deja partidos "a medias".
+// SESENTA días (a pedido, antes 7, luego 14, luego 21): con 21 días las
+// ligas europeas grandes (Premier, LALIGA, Serie A, Ligue 1) quedaban
+// afuera porque su temporada 2026/27 recién arranca el 21 de agosto —
+// ningún fixture de fecha 1 en adelante entraba en la ventana. 60 días la
+// cubre completa. Las cuotas no son requisito para crear: si el partido no
+// tiene cuotas aún, se crea igual (las llena el cron /cuotas aparte, ver
+// nota de cabecera del archivo) — así que ampliar la ventana no deja
+// partidos "a medias".
 //
 // OJO: si en Render está definida la variable de entorno DIAS_ANTICIPACION,
 // ESA manda por sobre este valor. Si el cambio no se nota, revisa ahí.
-const DIAS_ANTICIPACION = Number(process.env.DIAS_ANTICIPACION) || 21;
+const DIAS_ANTICIPACION = Number(process.env.DIAS_ANTICIPACION) || 60;
 // PROBABILIDAD_CAT4 se eliminó (a pedido) — todo partido nuevo es ahora
 // Categoría 4 siempre, ver nota de cabecera del archivo.
 
