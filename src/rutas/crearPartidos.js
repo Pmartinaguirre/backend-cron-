@@ -114,7 +114,8 @@ async function rutaCrearPartidos(req, res) {
   // viejo".
   const resultadoGeneral = { version: 'tier-v3-asimetrico', porLiga: {}, totalCreados: 0, errores: [] };
 
-  for (const { competencia, leagueId } of LIGAS) {
+  for (let indiceLiga = 0; indiceLiga < LIGAS.length; indiceLiga++) {
+    const { competencia, leagueId } = LIGAS[indiceLiga];
     const listaTierA = tierAPorCompetencia[competencia] || [];
     // saltadosPorYaExistente / saltadosPorEquiposSinDefinir son solo para
     // diagnóstico (por qué un partido "revisado" no terminó ni creado ni
@@ -135,10 +136,27 @@ async function rutaCrearPartidos(req, res) {
       ejemplosSaltadosPorTierA: [],
       saltadosPorYaExistente: 0,
       saltadosPorEquiposSinDefinir: 0,
+      // Si esto tiene algo, "revisados: 0" NO significa "no hay partidos" —
+      // significa que la API respondió con error (rate-limit u otro) y el
+      // response vino vacío. Ver nota en obtenerFixturesDeLiga.
+      apiErrores: null,
     };
 
     try {
-      const fixtures = await obtenerFixturesDeLiga(leagueId, TEMPORADA);
+      // Espaciado entre ligas para no pisar el límite de requests/minuto de
+      // API-Football: corriendo las 10 ligas seguidas sin pausa, las de la
+      // mitad del loop (Serie A, LALIGA, Premier, Ligue 1) empezaron a volver
+      // con "revisados: 0" reales-pero-falsos — el fetch no tiraba excepción,
+      // pero `response` venía vacío por rate-limit, indistinguible de "no hay
+      // partidos" hasta que se agregó `apiErrores` arriba. 1.2s alcanza para
+      // quedar bajo 10 req/min con margen.
+      if (indiceLiga > 0) {
+        await new Promise((r) => setTimeout(r, 1200));
+      }
+      const { fixtures, errores } = await obtenerFixturesDeLiga(leagueId, TEMPORADA);
+      if (errores) {
+        resumenLiga.apiErrores = errores;
+      }
 
       // Solo fixtures dentro de la ventana de anticipación, todavía no
       // jugados (NS = Not Started).

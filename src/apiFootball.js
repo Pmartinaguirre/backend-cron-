@@ -181,10 +181,19 @@ async function obtenerEstadoFixture(fixtureId) {
 }
 
 // ---------- Fixtures de una liga completa (usado por /crear-partidos) ----------
+// Devuelve también `errores`/`resultsRestantes` (además del array de
+// fixtures) porque un "revisados: 0" puede significar dos cosas muy
+// distintas: "no hay partidos" o "la API respondió con error/rate-limit y
+// devolvió el response vacío" — sin esto último a la vista, las dos se ven
+// idénticas desde /crear-partidos y no hay cómo distinguirlas de afuera.
 async function obtenerFixturesDeLiga(leagueId, season) {
   const resp = await fetch(`${BASE}/fixtures?league=${leagueId}&season=${season}`, { headers });
   const data = await resp.json();
-  return data?.response || [];
+  const errores = data?.errors;
+  // API-Football a veces manda `errors` como array vacío y a veces como
+  // objeto {} vacío (según el endpoint) — solo cuenta si tiene contenido real.
+  const tieneErrores = errores && (Array.isArray(errores) ? errores.length > 0 : Object.keys(errores).length > 0);
+  return { fixtures: data?.response || [], errores: tieneErrores ? errores : null };
 }
 
 // ---------- Equipos de una liga (usado por /equipos, para el selector Tier A del Admin) ----------
