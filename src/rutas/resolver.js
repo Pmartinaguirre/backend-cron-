@@ -116,7 +116,7 @@ async function rutaResolver(req, res) {
       // descartar los partidos cancelados/abandonados. Antes no se pedía, y
       // por eso este endpoint no tenía forma de saber que un partido ya no
       // se iba a jugar nunca.
-      'id, categoria, fixture_id_api, equipo_local, equipo_visitante, cuota_local, cuota_empate, cuota_visita, resultado_oficial, goles_local_oficial, fecha_expiracion, estado_partido'
+      'id, categoria, fixture_id_api, equipo_local, equipo_visitante, cuota_local, cuota_empate, cuota_visita, resultado_oficial, goles_local_oficial, fecha_expiracion, estado_partido, marcador_parcial_local, marcador_parcial_visita, penales_local, penales_visita'
     )
     .in('categoria', [4, 5])
     .eq('esta_activo', true)
@@ -160,7 +160,20 @@ async function rutaResolver(req, res) {
   for (const partido of pendientes) {
     try {
       const estado = await obtenerEstadoFixture(partido.fixture_id_api);
-      if (!estado || !ESTADOS_FINALIZADOS_RESOLVER.includes(estado.estado)) {
+
+      // API INCONSISTENTE (bug encontrado, caso O'Higgins vs Boca): la API
+      // ya nos había dicho una vez que este fixture estaba en 'PEN'
+      // (terminado) — así quedó guardado en estado_partido — pero al
+      // volver a preguntarle HORAS después, devolvió 'P' (tanda todavía en
+      // curso) de nuevo. Es un dato viejo/inconsistente del lado de
+      // API-Football, no un partido que de verdad siga jugándose. Si
+      // NUESTRA base ya lo tenía marcado como terminado, se confía en eso
+      // en vez de quedar esperando para siempre a que la API se ponga de
+      // acuerdo consigo misma.
+      const yaTerminadoEnBD = ESTADOS_FINALIZADOS_RESOLVER.includes(partido.estado_partido);
+      const apiConfirmaFinal = estado && ESTADOS_FINALIZADOS_RESOLVER.includes(estado.estado);
+
+      if (!apiConfirmaFinal && !yaTerminadoEnBD) {
         // Diagnóstico (a pedido, caso O'Higgins vs Boca que se quedaba en
         // "todaviaJugando" sin ninguna pista de por qué): antes esto no
         // dejaba rastro, así que no había forma de saber si la API no
@@ -169,22 +182,35 @@ async function rutaResolver(req, res) {
         // logs de Render.
         resultado.todaviaJugando++;
         resultado.diagnostico = resultado.diagnostico || [];
-        resultado.diagnostico.push({ id: partido.id, fixtureId: partido.fixture_id_api, motivo: 'estado_no_finalizado', estadoApi: estado?.estado ?? null });
-        continue;
-      }
-      if (estado.golesLocal == null || estado.golesVisita == null) {
-        // Raro: la API dice FT pero no trae marcador todavía — se reintenta
-        // en la próxima corrida en vez de resolver con datos incompletos.
-        resultado.todaviaJugando++;
-        resultado.diagnostico = resultado.diagnostico || [];
-        resultado.diagnostico.push({ id: partido.id, fixtureId: partido.fixture_id_api, motivo: 'sin_goles', estadoApi: estado.estado, golesLocal: estado.golesLocal, golesVisita: estado.golesVisita });
+        resultado.diagnostico.push({ id: partido.id, fixtureId: partido.fixture_id_api, motivo: 'estado_no_finalizado', estadoApi: estado?.estado ?? null, estadoBD: partido.estado_partido });
         continue;
       }
 
+      // Goles: preferí el dato fresco de la API; si vino incompleto (el
+      // caso de arriba, API inconsistente) cae al último marcador parcial
+      // que /vivo dejó guardado — que para un partido ya terminado en
+      // nuestra base es el resultado real de los 90'/alargue.
+      const golesLocal = estado?.golesLocal ?? partido.marcador_parcial_local;
+      const golesVisita = estado?.golesVisita ?? partido.marcador_parcial_visita;
+      if (golesLocal == null || golesVisita == null) {
+        // Raro: ni la API ni lo que teníamos guardado tienen marcador —
+        // se reintenta en la próxima corrida en vez de resolver con datos
+        // incompletos.
+        resultado.todaviaJugando++;
+        resultado.diagnostico = resultado.diagnostico || [];
+        resultado.diagnostico.push({ id: partido.id, fixtureId: partido.fixture_id_api, motivo: 'sin_goles', estadoApi: estado?.estado ?? null, golesLocal, golesVisita });
+        continue;
+      }
+      // Penales: mismo criterio — dato fresco de la API si lo trae, si no
+      // lo que ya teníamos guardado (puede haber quedado de una corrida
+      // vieja de /vivo).
+      const penalesLocal = estado?.penalesLocal ?? partido.penales_local ?? null;
+      const penalesVisita = estado?.penalesVisita ?? partido.penales_visita ?? null;
+
       const pago =
         Number(partido.categoria) === 5
-          ? await resolverCat5(partido, estado.golesLocal, estado.golesVisita, estado.penalesLocal, estado.penalesVisita)
-          : await resolverCat4(partido, estado.golesLocal, estado.golesVisita, estado.penalesLocal, estado.penalesVisita);
+          ? await resolverCat5(partido, golesLocal, golesVisita, penalesLocal, penalesVisita)
+          : await resolverCat4(partido, golesLocal, golesVisita, penalesLocal, penalesVisita);
 
       console.log(`[/resolver] Partido ${partido.id} resuelto:`, pago);
       resultado.resueltos++;
