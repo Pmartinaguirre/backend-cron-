@@ -193,7 +193,14 @@ async function obtenerFixturesDeLiga(leagueId, season) {
   // API-Football a veces manda `errors` como array vacío y a veces como
   // objeto {} vacío (según el endpoint) — solo cuenta si tiene contenido real.
   const tieneErrores = errores && (Array.isArray(errores) ? errores.length > 0 : Object.keys(errores).length > 0);
-  return { fixtures: data?.response || [], errores: tieneErrores ? errores : null };
+  return {
+    fixtures: data?.response || [],
+    errores: tieneErrores ? errores : null,
+    // `results` es el contador que manda la propia API-Football — si algún
+    // día difiere de `fixtures.length` (el array que realmente llegó), es
+    // señal de paginación cortada a mitad de camino.
+    resultsApi: data?.results ?? null,
+  };
 }
 
 // ---------- Equipos de una liga (usado por /equipos, para el selector Tier A del Admin) ----------

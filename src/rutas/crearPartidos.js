@@ -112,7 +112,19 @@ async function rutaCrearPartidos(req, res) {
   // CORRIÓ: en la depuración del filtro Tier A se perdió tiempo sin poder
   // distinguir "el fix no funciona" de "Render sigue sirviendo el código
   // viejo".
-  const resultadoGeneral = { version: 'tier-v3-asimetrico', porLiga: {}, totalCreados: 0, errores: [] };
+  // apiKeyUsada: solo los últimos 4 caracteres de la key que está usando
+  // ESTE deploy en Render, para poder comparar a simple vista contra la key
+  // que ves en el dashboard de API-Football/Render sin pegar la key entera
+  // en un chat — diagnóstico de "por qué mi curl manual trae 380 partidos y
+  // el server trae 0 con la misma consulta exacta".
+  const claveApi = process.env.API_FOOTBALL_KEY || '';
+  const resultadoGeneral = {
+    version: 'tier-v3-asimetrico',
+    apiKeyUsada: claveApi ? `...${claveApi.slice(-4)} (${claveApi.length} caracteres)` : '(vacía)',
+    porLiga: {},
+    totalCreados: 0,
+    errores: [],
+  };
 
   for (let indiceLiga = 0; indiceLiga < LIGAS.length; indiceLiga++) {
     const { competencia, leagueId } = LIGAS[indiceLiga];
@@ -153,10 +165,12 @@ async function rutaCrearPartidos(req, res) {
       if (indiceLiga > 0) {
         await new Promise((r) => setTimeout(r, 1200));
       }
-      const { fixtures, errores } = await obtenerFixturesDeLiga(leagueId, TEMPORADA);
+      const { fixtures, errores, resultsApi } = await obtenerFixturesDeLiga(leagueId, TEMPORADA);
       if (errores) {
         resumenLiga.apiErrores = errores;
       }
+      resumenLiga.fixturesRecibidosDeLaApi = fixtures.length;
+      resumenLiga.resultsApi = resultsApi;
 
       // Solo fixtures dentro de la ventana de anticipación, todavía no
       // jugados (NS = Not Started).
