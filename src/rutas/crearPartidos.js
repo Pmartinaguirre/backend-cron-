@@ -156,16 +156,30 @@ async function rutaCrearPartidos(req, res) {
 
     try {
       // Espaciado entre ligas para no pisar el límite de requests/minuto de
-      // API-Football: corriendo las 10 ligas seguidas sin pausa, las de la
-      // mitad del loop (Serie A, LALIGA, Premier, Ligue 1) empezaron a volver
-      // con "revisados: 0" reales-pero-falsos — el fetch no tiraba excepción,
-      // pero `response` venía vacío por rate-limit, indistinguible de "no hay
-      // partidos" hasta que se agregó `apiErrores` arriba. 1.2s alcanza para
-      // quedar bajo 10 req/min con margen.
+      // API-Football (independiente del cupo diario — confirmado con Pablo:
+      // Ultra Plan, 75.000/día, 17% usado, y aun así "Too many requests" a
+      // mitad del loop — es un límite de ráfaga, no de cupo). 1.2s de por sí
+      // no alcanzó (probablemente por otro cron —/vivo, /cuotas— pegándole
+      // a la API al mismo tiempo), así que además de la pausa se agrega
+      // reintento: si la liga vuelve con error de rate-limit, espera más y
+      // reintenta hasta 2 veces antes de darse por vencida con esa liga.
       if (indiceLiga > 0) {
         await new Promise((r) => setTimeout(r, 1200));
       }
-      const { fixtures, errores, resultsApi } = await obtenerFixturesDeLiga(leagueId, TEMPORADA);
+      let fixtures = [];
+      let errores = null;
+      let resultsApi = null;
+      for (let intento = 1; intento <= 3; intento++) {
+        const resultado = await obtenerFixturesDeLiga(leagueId, TEMPORADA);
+        fixtures = resultado.fixtures;
+        errores = resultado.errores;
+        resultsApi = resultado.resultsApi;
+        const esRateLimit = errores && JSON.stringify(errores).toLowerCase().includes('too many requests');
+        if (!esRateLimit) break;
+        if (intento < 3) {
+          await new Promise((r) => setTimeout(r, 3000 * intento));
+        }
+      }
       if (errores) {
         resumenLiga.apiErrores = errores;
       }
