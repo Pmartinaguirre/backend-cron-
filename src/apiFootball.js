@@ -76,6 +76,15 @@ async function obtenerEstadoFixture(fixtureId) {
   // reprogramar el partido solo (ver /vivo).
   const fechaISO = fixture.fixture?.date || null;
   const golesLocal = fixture.goals?.home ?? null;
+  // Tanda de penales (a pedido): API-Football la manda APARTE de "goals" —
+  // "goals" siempre queda con el resultado de 90'+alargue (el que define
+  // Local/Empate/Visita para los pronósticos, sin tocar por los penales).
+  // score.penalty es null hasta que arranca la definición; se guarda tal
+  // cual para mostrar la línea "Penales: X-Y" en la tarjeta y para que la
+  // barra de progreso muestre "Penales" en vez de un minuto sin sentido
+  // mientras se juega esa tanda (estado 'P').
+  const penalesLocal = fixture.score?.penalty?.home ?? null;
+  const penalesVisita = fixture.score?.penalty?.away ?? null;
   const golesVisita = fixture.goals?.away ?? null;
 
   // Eventos tipo "Goal" -> lista de {nombre, minuto, tipo} separada por
@@ -151,6 +160,8 @@ async function obtenerEstadoFixture(fixtureId) {
     goleadoresLocal,
     goleadoresVisita,
     estadisticas,
+    penalesLocal,
+    penalesVisita,
   };
 }
 

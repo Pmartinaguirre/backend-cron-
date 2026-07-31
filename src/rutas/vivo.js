@@ -53,6 +53,13 @@ async function rutaVivo(req, res) {
         estado_partido: estado.estado,
         goleadores_local: estado.goleadoresLocal,
         goleadores_visita: estado.goleadoresVisita,
+        // Tanda de penales (a pedido): null hasta que arranca la definición,
+        // así que solo se pisa el valor guardado cuando la API ya trae algo
+        // — si se guardara siempre (incluso null), un partido que ya venía
+        // con penales cargados podría "perderlos" en una corrida rara donde
+        // la API devuelva null por un instante.
+        ...(estado.penalesLocal != null ? { penales_local: estado.penalesLocal } : {}),
+        ...(estado.penalesVisita != null ? { penales_visita: estado.penalesVisita } : {}),
       };
 
       // PARTIDO REPROGRAMADO: cuando se posterga (PST) o se suspende, la
