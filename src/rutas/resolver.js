@@ -29,10 +29,21 @@ const {
 
 const DIAMANTES_BASE_SIN_CUOTA = 120; // mismo fallback que en sementomvp.jsx
 
-async function resolverCat5(partido, golesLocal, golesVisita) {
+async function resolverCat5(partido, golesLocal, golesVisita, penalesLocal, penalesVisita) {
   const respuestaGanadora = construirTextoLEV(partido.equipo_local, partido.equipo_visitante, golesLocal, golesVisita);
 
-  await supabase.from('desafios_mvp').update({ resultado_oficial: respuestaGanadora }).eq('id', partido.id);
+  // Penales (bug encontrado, caso O'Higgins vs Boca): /vivo deja de tocar un
+  // partido apenas su estado pasa a ser "terminado" (FT/AET/PEN), así que si
+  // la corrida exacta en que la API pasó de "P" a "PEN" no trajo todavía el
+  // resultado de la tanda, penales_local/penales_visita se quedaban en null
+  // PARA SIEMPRE — nadie más los volvía a pedir. Ahora /resolver también los
+  // guarda acá, en el mismo momento en que cierra el partido, así que aunque
+  // /vivo lo haya perdido, esto lo rescata.
+  await supabase.from('desafios_mvp').update({
+    resultado_oficial: respuestaGanadora,
+    ...(penalesLocal != null ? { penales_local: penalesLocal } : {}),
+    ...(penalesVisita != null ? { penales_visita: penalesVisita } : {}),
+  }).eq('id', partido.id);
 
   const { data: ganadores, error } = await supabase
     .from('predicciones_mvp')
@@ -55,10 +66,16 @@ async function resolverCat5(partido, golesLocal, golesVisita) {
   return { tipo: 'cat5', respuestaGanadora, diamantesGanados, ganadores: usuariosUnicos.length };
 }
 
-async function resolverCat4(partido, golesLocal, golesVisita) {
+async function resolverCat4(partido, golesLocal, golesVisita, penalesLocal, penalesVisita) {
+  // Ver nota de penales en resolverCat5 — mismo rescate acá para Cat.4.
   await supabase
     .from('desafios_mvp')
-    .update({ goles_local_oficial: golesLocal, goles_visitante_oficial: golesVisita })
+    .update({
+      goles_local_oficial: golesLocal,
+      goles_visitante_oficial: golesVisita,
+      ...(penalesLocal != null ? { penales_local: penalesLocal } : {}),
+      ...(penalesVisita != null ? { penales_visita: penalesVisita } : {}),
+    })
     .eq('id', partido.id);
 
   const { data: predicciones, error } = await supabase
@@ -156,8 +173,8 @@ async function rutaResolver(req, res) {
 
       const pago =
         Number(partido.categoria) === 5
-          ? await resolverCat5(partido, estado.golesLocal, estado.golesVisita)
-          : await resolverCat4(partido, estado.golesLocal, estado.golesVisita);
+          ? await resolverCat5(partido, estado.golesLocal, estado.golesVisita, estado.penalesLocal, estado.penalesVisita)
+          : await resolverCat4(partido, estado.golesLocal, estado.golesVisita, estado.penalesLocal, estado.penalesVisita);
 
       console.log(`[/resolver] Partido ${partido.id} resuelto:`, pago);
       resultado.resueltos++;
