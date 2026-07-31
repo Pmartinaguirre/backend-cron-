@@ -130,10 +130,20 @@ async function rutaResolver(req, res) {
     errores: [],
   };
 
+  // BUG encontrado (a pedido, caso O'Higgins vs Boca): acá solo se aceptaba
+  // estado === 'FT', así que un partido que se definía en el alargue (AET) o
+  // por penales (PEN) NUNCA se resolvía — se quedaba para siempre sin
+  // goles_local_oficial/resultado_oficial y sin pagar diamantes, aunque el
+  // marcador ya estuviera cerrado hace rato. Eso es lo que hacía que
+  // marcadorFinalDe() (sementomvp.jsx) nunca encontrara un resultado final
+  // para esos partidos y la página de competencia lo siguiera mostrando
+  // como "Hoy 20:30", como si todavía se fuera a jugar.
+  const ESTADOS_FINALIZADOS_RESOLVER = ['FT', 'AET', 'PEN'];
+
   for (const partido of pendientes) {
     try {
       const estado = await obtenerEstadoFixture(partido.fixture_id_api);
-      if (!estado || estado.estado !== 'FT') {
+      if (!estado || !ESTADOS_FINALIZADOS_RESOLVER.includes(estado.estado)) {
         resultado.todaviaJugando++;
         continue;
       }

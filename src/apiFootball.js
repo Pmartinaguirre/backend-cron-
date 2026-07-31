@@ -45,6 +45,21 @@ async function obtenerCuotas(fixtureId) {
 // adentro de la respuesta) y hasta ahora solo el primero lo aprovechaba.
 // Vienen como pares {type, value} por equipo; se cruzan en una sola lista
 // para que quien la use pinte "local | concepto | visita" sin emparejar.
+// Tanda de penales (a pedido): API-Football manda los penales del alargue
+// como eventos "Goal" normales, con el `time.elapsed` siguiendo la cuenta
+// donde quedó el partido (121, 122, 123...) en vez de un dato propio de
+// "kick de la tanda". Como el partido real (90' + alargue) nunca pasa de
+// 120', cualquier evento con elapsed > 120 es un pateo de la definición, no
+// un gol de tiempo de juego — así se separan de los goles reales tanto en
+// la lista de goleadores (obtenerEstadoFixture) como en la línea de tiempo
+// del resumen (obtenerDetalleFixture), y de paso se arma la lista propia de
+// "quién pateó y si convirtió" para mostrar la tanda aparte.
+const MINUTO_MAX_TIEMPO_REAL = 120;
+function esEventoDeTandaPenales(ev) {
+  const min = ev.time?.elapsed;
+  return ev.type === 'Goal' && Number.isFinite(min) && min > MINUTO_MAX_TIEMPO_REAL;
+}
+
 function extraerEstadisticas(fx, idLocal) {
   const statsLocal = (fx.statistics || []).find((s) => s.team?.id === idLocal)?.statistics || [];
   const statsVisita = (fx.statistics || []).find((s) => s.team?.id !== idLocal)?.statistics || [];
@@ -113,7 +128,7 @@ async function obtenerEstadoFixture(fixtureId) {
   const goleadoresLocal = [];
   const goleadoresVisita = [];
   eventos
-    .filter((ev) => ev.type === 'Goal' && ev.detail !== 'Missed Penalty')
+    .filter((ev) => ev.type === 'Goal' && ev.detail !== 'Missed Penalty' && !esEventoDeTandaPenales(ev))
     .forEach((ev) => {
       const esAutogol = ev.detail === 'Own Goal';
       const esPenal = ev.detail === 'Penalty';
@@ -248,31 +263,50 @@ async function obtenerDetalleFixture(fixtureId) {
   // Eventos ordenados cronológicamente, ya traducidos a algo que la app
   // pueda pintar directo (tipo + texto), en vez del vocabulario crudo de la
   // API ("Goal"/"subst"/"Card"/"Var").
-  const eventos = (fx.events || []).map((ev) => {
-    const tipo = (ev.type || '').toLowerCase();
-    const detalle = ev.detail || '';
-    let clase = 'otro';
-    if (tipo === 'goal') clase = detalle === 'Missed Penalty' ? 'penal_errado' : detalle === 'Own Goal' ? 'autogol' : detalle === 'Penalty' ? 'penal' : 'gol';
-    else if (tipo === 'card') clase = detalle === 'Red Card' ? 'roja' : 'amarilla';
-    else if (tipo === 'subst') clase = 'cambio';
-    else if (tipo === 'var') clase = 'var';
-    return {
-      minuto: ev.time?.elapsed != null ? ev.time.elapsed + (ev.time?.extra || 0) : null,
-      clase,
-      detalle,
-      // En un cambio, "player" es el que ENTRA y "assist" el que sale.
+  const eventos = (fx.events || [])
+    // Tanda de penales (a pedido): estos pateos NO van en la línea de tiempo
+    // del partido — "acá solo van goles en tiempo de juego con o sin
+    // alargue". Se sacan de acá y se arman aparte más abajo (tandaPenales).
+    .filter((ev) => !esEventoDeTandaPenales(ev))
+    .map((ev) => {
+      const tipo = (ev.type || '').toLowerCase();
+      const detalle = ev.detail || '';
+      let clase = 'otro';
+      if (tipo === 'goal') clase = detalle === 'Missed Penalty' ? 'penal_errado' : detalle === 'Own Goal' ? 'autogol' : detalle === 'Penalty' ? 'penal' : 'gol';
+      else if (tipo === 'card') clase = detalle === 'Red Card' ? 'roja' : 'amarilla';
+      else if (tipo === 'subst') clase = 'cambio';
+      else if (tipo === 'var') clase = 'var';
+      return {
+        minuto: ev.time?.elapsed != null ? ev.time.elapsed + (ev.time?.extra || 0) : null,
+        clase,
+        detalle,
+        // En un cambio, "player" es el que ENTRA y "assist" el que sale.
+        jugador: ev.player?.name || null,
+        secundario: ev.assist?.name || null,
+        // Los ids son lo que permite cruzar el evento con el jugador de la
+        // alineación. Cruzar por NOMBRE no sirve: API-Football manda
+        // "G. Ávalos" en la alineación y "Gabriel Ávalos" en el evento según
+        // el caso, y con acentos y apellidos compuestos eso falla seguido.
+        jugadorId: ev.player?.id ?? null,
+        secundarioId: ev.assist?.id ?? null,
+        esLocal: ev.team?.id === idLocal,
+        equipo: ev.team?.name || null,
+      };
+    }).sort((a, b) => (a.minuto ?? 999) - (b.minuto ?? 999));
+
+  // Tanda de penales, aparte (a pedido: "los goleadores de los penales van
+  // abajo en el resumen del partido"). Orden = el mismo que mandó la API
+  // (elapsed creciente 121, 122, 123...), que es el orden real de los
+  // pateos.
+  const tandaPenales = (fx.events || [])
+    .filter(esEventoDeTandaPenales)
+    .map((ev) => ({
       jugador: ev.player?.name || null,
-      secundario: ev.assist?.name || null,
-      // Los ids son lo que permite cruzar el evento con el jugador de la
-      // alineación. Cruzar por NOMBRE no sirve: API-Football manda
-      // "G. Ávalos" en la alineación y "Gabriel Ávalos" en el evento según
-      // el caso, y con acentos y apellidos compuestos eso falla seguido.
-      jugadorId: ev.player?.id ?? null,
-      secundarioId: ev.assist?.id ?? null,
+      convertido: ev.detail !== 'Missed Penalty',
       esLocal: ev.team?.id === idLocal,
-      equipo: ev.team?.name || null,
-    };
-  }).sort((a, b) => (a.minuto ?? 999) - (b.minuto ?? 999));
+      orden: ev.time?.elapsed ?? 999,
+    }))
+    .sort((a, b) => a.orden - b.orden);
 
   // El id de cada jugador vale doble: sirve para cruzar los eventos (goles,
   // tarjetas, cambios) con su ficha en la cancha, y para armar la URL de su
@@ -319,6 +353,7 @@ async function obtenerDetalleFixture(fixtureId) {
     equipoLocalId: fx.teams?.home?.id ?? null,
     equipoVisitaId: fx.teams?.away?.id ?? null,
     eventos,
+    tandaPenales,
     alineacionLocal,
     alineacionVisita,
     estadisticas,
