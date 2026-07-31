@@ -161,13 +161,23 @@ async function rutaResolver(req, res) {
     try {
       const estado = await obtenerEstadoFixture(partido.fixture_id_api);
       if (!estado || !ESTADOS_FINALIZADOS_RESOLVER.includes(estado.estado)) {
+        // Diagnóstico (a pedido, caso O'Higgins vs Boca que se quedaba en
+        // "todaviaJugando" sin ninguna pista de por qué): antes esto no
+        // dejaba rastro, así que no había forma de saber si la API no
+        // encontró el fixture, devolvió otro estado, o qué. Ahora queda en
+        // la respuesta misma del endpoint, sin tener que ir a buscar los
+        // logs de Render.
         resultado.todaviaJugando++;
+        resultado.diagnostico = resultado.diagnostico || [];
+        resultado.diagnostico.push({ id: partido.id, fixtureId: partido.fixture_id_api, motivo: 'estado_no_finalizado', estadoApi: estado?.estado ?? null });
         continue;
       }
       if (estado.golesLocal == null || estado.golesVisita == null) {
         // Raro: la API dice FT pero no trae marcador todavía — se reintenta
         // en la próxima corrida en vez de resolver con datos incompletos.
         resultado.todaviaJugando++;
+        resultado.diagnostico = resultado.diagnostico || [];
+        resultado.diagnostico.push({ id: partido.id, fixtureId: partido.fixture_id_api, motivo: 'sin_goles', estadoApi: estado.estado, golesLocal: estado.golesLocal, golesVisita: estado.golesVisita });
         continue;
       }
 
