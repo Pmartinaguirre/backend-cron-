@@ -18,6 +18,7 @@ const { rutaPosicionesLiga } = require('./src/rutas/posicionesLiga');
 const { rutaDetallePartido } = require('./src/rutas/detallePartido');
 const { rutaJugador, rutaClub } = require('./src/rutas/fichas');
 const { rutaBackfillEquipos, rutaForma, rutaPerfilesJugadores } = require('./src/rutas/equiposIds');
+const { rutaMomentum } = require('./src/rutas/momentum');
 
 const app = express();
 // Necesario para leer req.body en /invitar-a-grupo (POST con JSON) — las
@@ -91,6 +92,14 @@ app.get('/jugadores-perfil', (req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   next();
 }, rutaPerfilesJugadores);
+
+// /momentum: la serie de snapshots que guardó /vivo para armar el gráfico
+// de "quién domina" en la pestaña Resumen. Solo lectura, la llama el
+// navegador del jugador.
+app.get('/momentum', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  next();
+}, rutaMomentum);
 
 // /backfill-equipos: completa equipo_local_id / equipo_visita_id en los
 // partidos que se crearon antes de que se guardaran esos ids. Escribe en la

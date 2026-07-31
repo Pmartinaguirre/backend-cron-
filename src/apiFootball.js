@@ -39,6 +39,22 @@ async function obtenerCuotas(fixtureId) {
   return null; // todavía no hay cuotas cargadas para este fixture
 }
 
+// Estadísticas (tiros, posesión, corners...) de un fixture ya traído de
+// /fixtures?id= — factorizado acá porque tanto obtenerDetalleFixture como
+// obtenerEstadoFixture pegan a ESE MISMO endpoint (que ya trae statistics
+// adentro de la respuesta) y hasta ahora solo el primero lo aprovechaba.
+// Vienen como pares {type, value} por equipo; se cruzan en una sola lista
+// para que quien la use pinte "local | concepto | visita" sin emparejar.
+function extraerEstadisticas(fx, idLocal) {
+  const statsLocal = (fx.statistics || []).find((s) => s.team?.id === idLocal)?.statistics || [];
+  const statsVisita = (fx.statistics || []).find((s) => s.team?.id !== idLocal)?.statistics || [];
+  return statsLocal.map((s) => ({
+    concepto: s.type,
+    local: s.value,
+    visita: statsVisita.find((x) => x.type === s.type)?.value ?? null,
+  }));
+}
+
 // ---------- Estado del partido + marcador + goleadores (usado por /vivo y /resolver) ----------
 // Devuelve null si la API no tiene datos para ese fixture (raro, pero por
 // las dudas no se rompe el cron completo por un solo partido con problemas).
@@ -96,6 +112,16 @@ async function obtenerEstadoFixture(fixtureId) {
       const entrada = {
         nombre: ev.player?.name || 'Gol',
         minuto: minutoBase != null ? minutoBase + (ev.time?.extra || 0) : null,
+        // BUG (reportado): un gol al 45+1 se guardaba solo como minuto=46
+        // (elapsed + extra, para que ordene bien en la línea de tiempo —
+        // ver comentario de arriba), pero el frontend usaba ese mismo 46
+        // para decidir si el gol fue ANTES o DESPUÉS del entretiempo
+        // ("> 45" = segundo tiempo), así que un gol de descuento del PRIMER
+        // tiempo aparecía debajo del separador "MT" como si fuera del
+        // segundo. Se guarda además el elapsed SIN el agregado — ese es el
+        // que hay que usar para decidir de qué mitad es, nunca el que
+        // suma el descuento.
+        minutoBase,
         tipo: esAutogol ? 'autogol' : esPenal ? 'penal' : 'normal',
       };
       const esDelLocal = ev.team?.id === idEquipoLocal;
@@ -108,6 +134,13 @@ async function obtenerEstadoFixture(fixtureId) {
   goleadoresLocal.sort(porMinuto);
   goleadoresVisita.sort(porMinuto);
 
+  // MOMENTUM (a pedido): esta misma llamada a /fixtures?id= ya trae
+  // "statistics" adentro — no cuesta una consulta extra de cuota aprovechar
+  // eso acá para ir guardando snapshots de tiros/corners/posesión con el
+  // minuto de cada corrida de /vivo, y así poder armar un gráfico de
+  // "quién domina" sin depender de un dato de momentum que la API no tiene.
+  const estadisticas = extraerEstadisticas(fixture, idEquipoLocal);
+
   return {
     estado,
     minuto,
@@ -117,6 +150,7 @@ async function obtenerEstadoFixture(fixtureId) {
     golesVisita,
     goleadoresLocal,
     goleadoresVisita,
+    estadisticas,
   };
 }
 
@@ -264,16 +298,7 @@ async function obtenerDetalleFixture(fixtureId) {
   const alineacionLocal = armarAlineacion(lineups.find((l) => l.team?.id === idLocal));
   const alineacionVisita = armarAlineacion(lineups.find((l) => l.team?.id !== idLocal));
 
-  // Estadísticas (tiros, posesión, corners...): vienen como pares
-  // {type, value} por equipo. Se cruzan en una sola lista para que la app
-  // pinte "local | concepto | visita" sin tener que emparejar nada.
-  const statsLocal = (fx.statistics || []).find((s) => s.team?.id === idLocal)?.statistics || [];
-  const statsVisita = (fx.statistics || []).find((s) => s.team?.id !== idLocal)?.statistics || [];
-  const estadisticas = statsLocal.map((s) => ({
-    concepto: s.type,
-    local: s.value,
-    visita: statsVisita.find((x) => x.type === s.type)?.value ?? null,
-  }));
+  const estadisticas = extraerEstadisticas(fx, idLocal);
 
   return {
     equipoLocal: fx.teams?.home?.name || '',

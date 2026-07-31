@@ -86,6 +86,28 @@ async function rutaVivo(req, res) {
       } else {
         resultado.actualizados++;
       }
+
+      // MOMENTUM (a pedido): guardar un snapshot de las estadísticas de este
+      // instante, con su minuto — la serie completa de snapshots de un
+      // partido es lo que después arma el gráfico de "quién domina" (ver
+      // momentum_partido_mvp / crear_tabla_momentum.sql). Solo si hay algo
+      // que guardar (antes del pitazo inicial estadisticas viene vacío) y
+      // solo mientras el partido está EN JUEGO (no tiene sentido seguir
+      // sumando snapshots idénticos durante HT, o después de FT).
+      const ESTADOS_EN_JUEGO = ['1H', '2H', 'ET', 'P', 'BT'];
+      if ((estado.estadisticas || []).length > 0 && ESTADOS_EN_JUEGO.includes(estado.estado)) {
+        const { error: errMomentum } = await supabase.from('momentum_partido_mvp').insert({
+          desafio_id: partido.id,
+          minuto: estado.minuto,
+          minuto_extra: estado.minutoExtra,
+          marcador_local: estado.golesLocal,
+          marcador_visita: estado.golesVisita,
+          estadisticas: estado.estadisticas,
+        });
+        if (errMomentum) {
+          console.error(`[/vivo] Error guardando snapshot de momentum ${partido.id}:`, errMomentum.message);
+        }
+      }
     } catch (e) {
       resultado.errores.push({ id: partido.id, error: e.message });
     }
