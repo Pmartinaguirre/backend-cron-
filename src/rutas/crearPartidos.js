@@ -44,17 +44,15 @@ const { LIGAS, TEMPORADA, modoDeCompetencia, MODO_TIER_A } = require('../ligas')
 // trae lo que ya está por jugarse pronto, y lo crea directo con
 // esta_activo = true.
 //
-// CATORCE días (a pedido, antes 7): se amplió temporalmente para poder
-// probar el cambio de "marcador exacto siempre disponible" sin esperar a
-// que entre una fecha nueva sola — con 7 días no había partidos nuevos
-// que crear todavía. Las cuotas no son requisito para crear: si el
-// partido no tiene cuotas aún, se crea igual (las llena el cron /cuotas
-// aparte, ver nota de cabecera del archivo) — así que ampliar la ventana
-// no deja partidos "a medias".
+// VEINTIÚN días (a pedido, antes 7 y luego 14): la ventana se fue
+// ampliando para tener más fecha nueva disponible de entrada. Las cuotas
+// no son requisito para crear: si el partido no tiene cuotas aún, se crea
+// igual (las llena el cron /cuotas aparte, ver nota de cabecera del
+// archivo) — así que ampliar la ventana no deja partidos "a medias".
 //
 // OJO: si en Render está definida la variable de entorno DIAS_ANTICIPACION,
 // ESA manda por sobre este valor. Si el cambio no se nota, revisa ahí.
-const DIAS_ANTICIPACION = Number(process.env.DIAS_ANTICIPACION) || 14;
+const DIAS_ANTICIPACION = Number(process.env.DIAS_ANTICIPACION) || 21;
 // PROBABILIDAD_CAT4 se eliminó (a pedido) — todo partido nuevo es ahora
 // Categoría 4 siempre, ver nota de cabecera del archivo.
 
