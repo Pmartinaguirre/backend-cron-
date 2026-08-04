@@ -200,7 +200,9 @@ async function obtenerDetalleFixture(fixtureId) {
     if (tipo === 'goal') clase = detalle === 'Missed Penalty' ? 'penal_errado' : detalle === 'Own Goal' ? 'autogol' : detalle === 'Penalty' ? 'penal' : 'gol';
     else if (tipo === 'card') clase = detalle === 'Red Card' ? 'roja' : 'amarilla';
     else if (tipo === 'subst') clase = 'cambio';
-    else if (tipo === 'var') clase = 'var';
+    // VAR (a pedido): gol anulado se distingue del resto de revisiones para
+    // poder pintar "Revisión de gol" + "Gol anulado" como dos líneas.
+    else if (tipo === 'var') clase = /goal/i.test(detalle) && /(disallow|cancel|anulad)/i.test(detalle) ? 'gol_anulado' : 'var';
     return {
       minuto: ev.time?.elapsed != null ? ev.time.elapsed + (ev.time?.extra || 0) : null,
       clase,
