@@ -81,6 +81,16 @@ async function obtenerEstadoFixture(fixtureId) {
 
   const estado = fixture.fixture?.status?.short || null; // NS, 1H, HT, 2H, FT, PST, etc.
   const minuto = fixture.fixture?.status?.elapsed ?? null;
+  // Estadio + árbitro (a pedido, "Información del partido" en la app): la
+  // misma llamada a /fixtures?id= ya trae estos dos datos, así que no hace
+  // falta pegarle a otro endpoint aparte — se reaprovecha acá y /cuotas los
+  // guarda junto con las cuotas (ver rutas/cuotas.js). El árbitro suele
+  // confirmarse recién unos días antes del partido (a veces sigue null
+  // hasta último momento, incluso con el estadio ya cargado), así que puede
+  // llegar en null por un tiempo — no es un error, es que la propia
+  // API-Football todavía no lo tiene asignado.
+  const estadio = [fixture.fixture?.venue?.name, fixture.fixture?.venue?.city].filter(Boolean).join(' — ') || null;
+  const arbitro = fixture.fixture?.referee || null;
   // Tiempo de descuento: API-Football lo manda aparte de "elapsed" (en un
   // 90+5, elapsed=90 y extra=5). Se guarda separado para poder mostrar
   // "90'+5'" en vez de sumarlos y perder la distinción.
@@ -177,6 +187,8 @@ async function obtenerEstadoFixture(fixtureId) {
     estadisticas,
     penalesLocal,
     penalesVisita,
+    estadio,
+    arbitro,
   };
 }
 
@@ -291,7 +303,11 @@ async function obtenerDetalleFixture(fixtureId) {
       if (tipo === 'goal') clase = detalle === 'Missed Penalty' ? 'penal_errado' : detalle === 'Own Goal' ? 'autogol' : detalle === 'Penalty' ? 'penal' : 'gol';
       else if (tipo === 'card') clase = detalle === 'Red Card' ? 'roja' : 'amarilla';
       else if (tipo === 'subst') clase = 'cambio';
-      else if (tipo === 'var') clase = 'var';
+      // VAR (a pedido): cuando la revisión termina en un gol anulado
+      // (detail tipo "Goal Disallowed - Offside", "Goal cancelled", etc.),
+      // se marca con su propia clase para que el frontend pinte DOS líneas
+      // ("Revisión de gol" + "Gol anulado") en vez de la genérica "var".
+      else if (tipo === 'var') clase = /goal/i.test(detalle) && /(disallow|cancel|anulad)/i.test(detalle) ? 'gol_anulado' : 'var';
       return {
         minuto: ev.time?.elapsed != null ? ev.time.elapsed + (ev.time?.extra || 0) : null,
         clase,
