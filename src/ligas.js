@@ -42,11 +42,19 @@ const LIGAS = [
   // COMPETENCIAS_CON_MODO en MisGrupos.jsx, si no el grupo no tiene dónde
   // elegir entre "Completa" y "Solo grandes".
   { competencia: 'Primera División Argentina', leagueId: 128, modo: MODO_COMPLETA },
-  { competencia: 'Serie A Italia', leagueId: 135, modo: MODO_TIER_A },
-  { competencia: 'LALIGA España', leagueId: 140, modo: MODO_TIER_A },
-  { competencia: 'Premier League Inglaterra', leagueId: 39, modo: MODO_TIER_A },
-  { competencia: 'Ligue 1 Francia', leagueId: 61, modo: MODO_TIER_A },
-  { competencia: 'Champions League', leagueId: 2, modo: MODO_TIER_A },
+  // Ligas de Europa pasaron a COMPLETA (a pedido): antes solo se creaban los
+  // partidos Tier A, así que un grupo nunca podía elegir "completa" para
+  // estas — no había nada más que mostrar. Ahora se crean TODOS los partidos
+  // de la fecha y el recorte a "solo grandes" queda, igual que en Chile y
+  // Argentina, como una elección de cada grupo (modo_competencias) o del
+  // jugador (filtro personal). OJO: esto multiplica varias veces la cantidad
+  // de partidos creados por semana (18-20 por fecha en vez de un puñado) —
+  // más cuota de API-Football gastada en /crear-partidos y /cuotas.
+  { competencia: 'Serie A Italia', leagueId: 135, modo: MODO_COMPLETA },
+  { competencia: 'LALIGA España', leagueId: 140, modo: MODO_COMPLETA },
+  { competencia: 'Premier League Inglaterra', leagueId: 39, modo: MODO_COMPLETA },
+  { competencia: 'Ligue 1 Francia', leagueId: 61, modo: MODO_COMPLETA },
+  { competencia: 'Champions League', leagueId: 2, modo: MODO_COMPLETA },
   { competencia: 'Liga MX México', leagueId: 262, modo: MODO_TIER_A },
 ];
 
