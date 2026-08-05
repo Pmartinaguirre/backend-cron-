@@ -28,6 +28,11 @@ const LIGAS = [
   { competencia: 'Copa Libertadores', leagueId: 13, modo: MODO_COMPLETA },
   { competencia: 'Copa Sudamericana', leagueId: 11, modo: MODO_COMPLETA },
   { competencia: 'Primera División Chile', leagueId: 265, modo: MODO_COMPLETA },
+  // Copas nacionales de Chile (a pedido): mismo criterio que la liga chilena
+  // — el jugador sigue completo su propio campeonato, no solo los partidos
+  // entre grandes.
+  { competencia: 'Copa Chile', leagueId: 267, modo: MODO_COMPLETA },
+  { competencia: 'Copa de la Liga', leagueId: 1220, modo: MODO_COMPLETA },
   // Argentina pasó a COMPLETA (igual que Chile): se crean TODOS los partidos
   // de cada fecha, y el recorte a "solo grandes" es una decisión de cada
   // grupo (modo_competencias) o del jugador (filtro personal) — filtra lo que
