@@ -23,6 +23,7 @@ const { rutaMedia } = require('./src/rutas/media');
 const { rutaDiagnosticoCobertura } = require('./src/rutas/diagnosticoCobertura');
 const { rutaDiagnosticoPartido } = require('./src/rutas/diagnosticoPartido');
 const { rutaDiagnosticoIds } = require('./src/rutas/diagnosticoIds');
+const { rutaGanadorSemanal } = require('./src/rutas/ganadorSemanal');
 
 const app = express();
 // Necesario para leer req.body en /invitar-a-grupo (POST con JSON) — las
@@ -46,6 +47,11 @@ app.post('/media', exigirSecreto, rutaMedia);
 
 app.get('/resolver', exigirSecreto, rutaResolver);
 app.post('/resolver', exigirSecreto, rutaResolver);
+
+// /ganador-semanal: corre 1 vez por semana (a pedido, premio "Ganador
+// semanal" por grupo) — ver src/rutas/ganadorSemanal.js.
+app.get('/ganador-semanal', exigirSecreto, rutaGanadorSemanal);
+app.post('/ganador-semanal', exigirSecreto, rutaGanadorSemanal);
 
 app.get('/crear-partidos', exigirSecreto, rutaCrearPartidos);
 app.post('/crear-partidos', exigirSecreto, rutaCrearPartidos);
