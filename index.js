@@ -19,6 +19,8 @@ const { rutaDetallePartido } = require('./src/rutas/detallePartido');
 const { rutaJugador, rutaClub } = require('./src/rutas/fichas');
 const { rutaBackfillEquipos, rutaForma, rutaPerfilesJugadores } = require('./src/rutas/equiposIds');
 const { rutaMomentum } = require('./src/rutas/momentum');
+const { rutaMedia } = require('./src/rutas/media');
+const { rutaDiagnosticoCobertura } = require('./src/rutas/diagnosticoCobertura');
 
 const app = express();
 // Necesario para leer req.body en /invitar-a-grupo (POST con JSON) — las
@@ -34,6 +36,11 @@ app.post('/cuotas', exigirSecreto, rutaCuotas);
 
 app.get('/vivo', exigirSecreto, rutaVivo);
 app.post('/vivo', exigirSecreto, rutaVivo);
+
+// /media: búsqueda automática en YouTube (TNT Sports Chile) del resumen de
+// partidos de fútbol chileno terminados — ver src/rutas/media.js.
+app.get('/media', exigirSecreto, rutaMedia);
+app.post('/media', exigirSecreto, rutaMedia);
 
 app.get('/resolver', exigirSecreto, rutaResolver);
 app.post('/resolver', exigirSecreto, rutaResolver);
@@ -100,6 +107,15 @@ app.get('/momentum', (req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   next();
 }, rutaMomentum);
+
+// /diagnostico-cobertura: a pedido, para saber qué datos trae REALMENTE
+// API-Football por competencia (alineaciones, estadísticas, tabla de
+// posiciones, etc.), antes de asumir que falta algo del lado nuestro.
+// Sin ?competencia= chequea todas las ligas de golpe. Solo lectura.
+app.get('/diagnostico-cobertura', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  next();
+}, rutaDiagnosticoCobertura);
 
 // /backfill-equipos: completa equipo_local_id / equipo_visita_id en los
 // partidos que se crearon antes de que se guardaran esos ids. Escribe en la
