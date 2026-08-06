@@ -223,9 +223,12 @@ async function rutaMedia(req, res) {
   }
   const competenciasABuscar = competenciaFiltro ? [competenciaFiltro] : TODAS_LAS_COMPETENCIAS_CON_FUENTE;
 
-  // Corregido: todos los partidos son Cat.4 (marcador exacto) por default —
-  // el admin de cada grupo filtra a L/E/V solo en SU panel, eso no cambia la
-  // categoría real del desafío en la base. Volvió a `categoria = 4`.
+  // BUG confirmado con datos reales (a pedido, vía /diagnostico-ids sobre los
+  // 10 partidos de la fecha 2 del Clausura Argentina que no aparecían en
+  // ningún lado): los 10 tienen `categoria: 5` en la base — NO todos los
+  // partidos son Cat.4 por default, hay Cat.5 real y actual conviviendo con
+  // Cat.4. Por eso `categoria = 4` los dejaba afuera de la consulta entera,
+  // ni siquiera llegaban a "excluidos". Vuelve `categoria IN (4, 5)`.
   //
   // Para entender por qué "encontró 4 de 16" (a pedido, diagnóstico): en vez
   // de aplicar TODOS los filtros de una y perder de vista a los que quedan
@@ -237,7 +240,7 @@ async function rutaMedia(req, res) {
   const { data: candidatosBrutos, error } = await supabase
     .from('desafios_mvp')
     .select('id, pregunta, tema, equipo_local, equipo_visitante, fecha_expiracion, goles_local_oficial, goles_visitante_oficial, media_video_url, media_video_corregido, esta_activo')
-    .eq('categoria', 4)
+    .in('categoria', [4, 5])
     .in('tema', competenciasABuscar);
 
   if (error) {
