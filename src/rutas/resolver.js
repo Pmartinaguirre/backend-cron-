@@ -61,6 +61,16 @@ async function resolverCat5(partido, golesLocal, golesVisita, penalesLocal, pena
     const { data: u } = await supabase.from('usuarios').select('puntos').eq('id', uid).single();
     if (u) {
       await supabase.from('usuarios').update({ puntos: (u.puntos || 0) + diamantesGanados }).eq('id', uid);
+      // Historial de diamantes (a pedido: "Ganador semanal" — ver
+      // agregar_ganador_semanal_y_historial_diamantes.sql y
+      // src/rutas/ganadorSemanal.js). Registra CADA pago con fecha, para
+      // poder sumar cuánto ganó cada jugador DENTRO de una semana/grupo.
+      await supabase.from('diamantes_historial_mvp').insert({
+        usuario_id: uid,
+        monto: diamantesGanados,
+        desafio_id: partido.id,
+        motivo: 'cat5',
+      });
     }
   }
   return { tipo: 'cat5', respuestaGanadora, diamantesGanados, ganadores: usuariosUnicos.length };
@@ -100,6 +110,13 @@ async function resolverCat4(partido, golesLocal, golesVisita, penalesLocal, pena
     const { data: u } = await supabase.from('usuarios').select('puntos').eq('id', p.usuario_id).single();
     if (u) {
       await supabase.from('usuarios').update({ puntos: (u.puntos || 0) + monto }).eq('id', p.usuario_id);
+      // Historial de diamantes (ver nota igual en resolverCat5).
+      await supabase.from('diamantes_historial_mvp').insert({
+        usuario_id: p.usuario_id,
+        monto,
+        desafio_id: partido.id,
+        motivo: 'cat4',
+      });
       pagados++;
     }
   }
