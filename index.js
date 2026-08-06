@@ -22,6 +22,7 @@ const { rutaMomentum } = require('./src/rutas/momentum');
 const { rutaMedia } = require('./src/rutas/media');
 const { rutaDiagnosticoCobertura } = require('./src/rutas/diagnosticoCobertura');
 const { rutaDiagnosticoPartido } = require('./src/rutas/diagnosticoPartido');
+const { rutaDiagnosticoIds } = require('./src/rutas/diagnosticoIds');
 
 const app = express();
 // Necesario para leer req.body en /invitar-a-grupo (POST con JSON) — las
@@ -125,6 +126,14 @@ app.get('/diagnostico-partido', (req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   next();
 }, rutaDiagnosticoPartido);
+
+// /diagnostico-ids: trae la fila cruda de desafios_mvp para ids puntuales
+// (separados por coma) — para entender por qué un partido puntual ni
+// siquiera aparece en /media (¿existe? ¿tiene el tema/categoria esperados?).
+app.get('/diagnostico-ids', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  next();
+}, rutaDiagnosticoIds);
 
 // /backfill-equipos: completa equipo_local_id / equipo_visita_id en los
 // partidos que se crearon antes de que se guardaran esos ids. Escribe en la
