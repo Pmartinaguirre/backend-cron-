@@ -49,8 +49,16 @@ function ultimaPalabra(nombre) {
 
 async function buscarVideoResumen(equipoLocal, equipoVisitante, fechaPartidoISO) {
   const q = encodeURIComponent(`${equipoLocal} ${equipoVisitante} resumen`);
-  const publishedAfter = fechaPartidoISO; // el resumen se sube DESPUÉS del partido
-  const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${CANAL_TNT_SPORTS_CHILE}&q=${q}&type=video&order=date&maxResults=5&publishedAfter=${publishedAfter}&key=${YOUTUBE_API_KEY}`;
+  // BUG encontrado (a pedido, "0 encontrados" en TODAS las corridas): la
+  // API de YouTube exige el timestamp en formato RFC3339 completo,
+  // terminado en "Z" o con offset de zona horaria — `fecha_expiracion` en
+  // la base no siempre viene así (a veces sin la Z), y mandado tal cual
+  // rompía CADA búsqueda con un error de formato antes de buscar nada. Se
+  // fuerza acá con .toISOString(), que siempre da el formato válido.
+  const fechaValida = fechaPartidoISO ? new Date(fechaPartidoISO) : null;
+  const publishedAfter = fechaValida && !isNaN(fechaValida.getTime()) ? fechaValida.toISOString() : null;
+  const parametroFecha = publishedAfter ? `&publishedAfter=${publishedAfter}` : '';
+  const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${CANAL_TNT_SPORTS_CHILE}&q=${q}&type=video&order=date&maxResults=5${parametroFecha}&key=${YOUTUBE_API_KEY}`;
   const resp = await fetch(url);
   const data = await resp.json();
   if (data.error) {
