@@ -211,14 +211,29 @@ async function rutaMedia(req, res) {
   const limite = new Date();
   limite.setDate(limite.getDate() - DIAS_VENTANA_MEDIA);
 
-  // Terminados (Cat.4 con marcador oficial ya cargado por /resolver), de
-  // alguna competencia con fuente de YouTube conocida (ver FUENTES arriba),
-  // sin video guardado, y sin corrección manual previa.
+  // ?competencia=... (a pedido, para probar UNA liga sin tocar las demás:
+  // "no busques partidos de otras ligas, veamos bien cómo funciona"). Sin el
+  // parámetro, se comporta como siempre (todas las competencias con fuente).
+  const competenciaFiltro = req.query?.competencia || null;
+  if (competenciaFiltro && !FUENTE_POR_COMPETENCIA[competenciaFiltro]) {
+    return res.status(400).json({
+      error: `"${competenciaFiltro}" no tiene fuente de YouTube configurada.`,
+      competenciasDisponibles: TODAS_LAS_COMPETENCIAS_CON_FUENTE,
+    });
+  }
+  const competenciasABuscar = competenciaFiltro ? [competenciaFiltro] : TODAS_LAS_COMPETENCIAS_CON_FUENTE;
+
+  // BUG encontrado (a pedido: "encontró 4 de 16 partidos, no busca bien"):
+  // el filtro `categoria = 4` dejaba AFUERA de la búsqueda a todos los
+  // partidos Cat.5 (solo L/E/V, sin marcador exacto) — ni siquiera se
+  // intentaban, sin importar cuán bien funcionara el matching de nombres.
+  // La Liga Profesional Argentina tiene partidos de las dos categorías; acá
+  // debe entrar cualquier fútbol real terminado, Cat.4 O Cat.5.
   const { data: partidos, error } = await supabase
     .from('desafios_mvp')
     .select('id, pregunta, tema, equipo_local, equipo_visitante, fecha_expiracion, goles_local_oficial, goles_visitante_oficial')
-    .eq('categoria', 4)
-    .in('tema', TODAS_LAS_COMPETENCIAS_CON_FUENTE)
+    .in('categoria', [4, 5])
+    .in('tema', competenciasABuscar)
     .eq('esta_activo', true)
     .eq('media_video_corregido', false)
     .is('media_video_url', null)
