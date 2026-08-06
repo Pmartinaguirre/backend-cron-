@@ -21,6 +21,7 @@ const { rutaBackfillEquipos, rutaForma, rutaPerfilesJugadores } = require('./src
 const { rutaMomentum } = require('./src/rutas/momentum');
 const { rutaMedia } = require('./src/rutas/media');
 const { rutaDiagnosticoCobertura } = require('./src/rutas/diagnosticoCobertura');
+const { rutaDiagnosticoPartido } = require('./src/rutas/diagnosticoPartido');
 
 const app = express();
 // Necesario para leer req.body en /invitar-a-grupo (POST con JSON) — las
@@ -116,6 +117,14 @@ app.get('/diagnostico-cobertura', (req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   next();
 }, rutaDiagnosticoCobertura);
+
+// /diagnostico-partido: busca un partido puntual (liga + fecha) directo en
+// API-Football, sin pasar por nuestra base — para saber si un dato faltante
+// en la app es porque la API no lo tiene o porque hay un bug nuestro.
+app.get('/diagnostico-partido', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  next();
+}, rutaDiagnosticoPartido);
 
 // /backfill-equipos: completa equipo_local_id / equipo_visita_id en los
 // partidos que se crearon antes de que se guardaran esos ids. Escribe en la
