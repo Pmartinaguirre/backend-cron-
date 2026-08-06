@@ -164,9 +164,32 @@ async function traerUploadsRecientes(channelId, maxResults = 150) {
   return { videos };
 }
 
+// Videos de categorías/ramas que NO son la Primera División (a pedido, bug
+// encontrado: "Vélez vs Talleres" trajo el resumen de Reserva/Proyección de
+// esos mismos clubes, con marcador 0-1, en vez del de Primera con el 1-3
+// real) — se descartan de entrada, ni siquiera entran a la comparación de
+// nombres, porque casi nunca es lo que se quiere.
+const PALABRAS_EXCLUYEN_VIDEO = /reserva|proyecci[oó]n|sub\s?-?\d{1,2}\b|femenin|juvenil/i;
+
+// Saca el marcador (dos números separados por guion) de un título de video,
+// tipo "VÉLEZ 2 - 1 TALLERES" -> [2, 1]. Sirve para descartar un candidato
+// cuyo nombre matchea pero el marcador NO corresponde al resultado real ya
+// cargado (mismo bug de Reserva/Proyección: nombre igual, división distinta,
+// marcador distinto).
+function extraerMarcadorDeTitulo(titulo) {
+  const m = String(titulo || '').match(/(\d{1,2})\s*[-–—:]\s*(\d{1,2})/);
+  if (!m) return null;
+  return [Number(m[1]), Number(m[2])];
+}
+
 // Busca el resumen de UN partido adentro de la lista de uploads YA TRAÍDA
 // del canal (ver traerUploadsRecientes) — sin pega la red por partido.
-function buscarVideoResumenEnLista(equipoLocal, equipoVisitante, fechaPartidoISO, videos) {
+// golesOficiales: [golesLocal, golesVisitante] si el partido es Cat.4 y ya
+// tiene marcador exacto cargado — se usa para verificar que el video
+// encontrado sea DE VERDAD ese partido (ver PALABRAS_EXCLUYEN_VIDEO y bug de
+// Reserva/Proyección más arriba). null si es Cat.5 o todavía no hay marcador
+// (en ese caso no se puede verificar por marcador, solo por nombre).
+function buscarVideoResumenEnLista(equipoLocal, equipoVisitante, fechaPartidoISO, videos, golesOficiales = null) {
   const fechaValida = fechaPartidoISO ? new Date(fechaPartidoISO) : null;
   // Solo videos publicados DESPUÉS del partido (con 3hs de margen para
   // partidos que ya estaban en tiempo de descuento cuando se guardó la
@@ -174,9 +197,10 @@ function buscarVideoResumenEnLista(equipoLocal, equipoVisitante, fechaPartidoISO
   // equipos, de una fecha anterior del campeonato, se cuele como si fuera
   // el de este partido.
   const desde = fechaValida && !isNaN(fechaValida.getTime()) ? fechaValida.getTime() - 3 * 3600 * 1000 : null;
-  const candidatosVideos = desde
+  const candidatosVideos = (desde
     ? videos.filter((v) => !v.publicadoEn || new Date(v.publicadoEn).getTime() >= desde)
-    : videos;
+    : videos
+  ).filter((v) => !PALABRAS_EXCLUYEN_VIDEO.test(v.titulo));
   const candidatos = candidatosVideos.map((v) => v.titulo);
 
   const nl = normalizar(equipoLocal);
@@ -184,19 +208,35 @@ function buscarVideoResumenEnLista(equipoLocal, equipoVisitante, fechaPartidoISO
   const palabrasLocal = palabrasSignificativas(equipoLocal);
   const palabrasVisita = palabrasSignificativas(equipoVisitante);
 
-  // Dos pasadas: primero el nombre completo (más estricta), y si nada
-  // matchea así, alguna palabra significativa de cada equipo (nombre corto
-  // real del club, no necesariamente la última palabra) — así "Everton 3-4
-  // Colo Colo" matchea contra "Everton de Viña" por "everton", y "Santiago
-  // Wanderers 2-1 U. La Calera" matchea por "wanderers"+"calera".
+  // Si hay marcador oficial cargado, el título tiene que traer ESE marcador
+  // (como conjunto, sin importar el orden en que aparezcan los equipos) —
+  // así se descarta un video con nombre parecido pero de otra categoría/
+  // división (bug de Reserva/Proyección: mismo nombre de club, marcador
+  // distinto). Si el título no trae ningún marcador reconocible, no se
+  // descarta (mejor no perder el video por no poder leerle el marcador).
+  const marcadorCoincide = (titulo) => {
+    if (!golesOficiales) return true;
+    const extraido = extraerMarcadorDeTitulo(titulo);
+    if (!extraido) return true;
+    const [a, b] = extraido;
+    const [x, y] = golesOficiales;
+    return (a === x && b === y) || (a === y && b === x);
+  };
+
+  // BUG encontrado (a pedido: "Rosario Central vs Racing" trajo el video de
+  // "Barracas Central vs Racing" — matcheaba por la palabra suelta "central",
+  // que las dos tienen): antes alcanzaba con QUE UNA palabra significativa
+  // calzara. Ahora, si el equipo tiene más de una palabra significativa,
+  // TIENEN que calzar TODAS (ej.: "rosario" Y "central"), no cualquiera —
+  // "Barracas Central" no tiene "rosario", así que ya no matchea.
   const match = candidatosVideos.find((v) => {
     const titulo = normalizar(v.titulo);
-    return titulo.includes(nl) && titulo.includes(nv);
+    return titulo.includes(nl) && titulo.includes(nv) && marcadorCoincide(v.titulo);
   }) || candidatosVideos.find((v) => {
     const titulo = normalizar(v.titulo);
-    const tieneLocal = palabrasLocal.some((p) => titulo.includes(p));
-    const tieneVisita = palabrasVisita.some((p) => titulo.includes(p));
-    return tieneLocal && tieneVisita;
+    const tieneLocal = palabrasLocal.every((p) => titulo.includes(p));
+    const tieneVisita = palabrasVisita.every((p) => titulo.includes(p));
+    return tieneLocal && tieneVisita && marcadorCoincide(v.titulo);
   });
 
   return { videoId: match?.videoId || null, candidatos };
@@ -222,6 +262,16 @@ async function rutaMedia(req, res) {
     });
   }
   const competenciasABuscar = competenciaFiltro ? [competenciaFiltro] : TODAS_LAS_COMPETENCIAS_CON_FUENTE;
+
+  // BUG encontrado (a pedido: "salida demasiado grande", cron-job.org corta
+  // la respuesta): con más partidos entrando a la búsqueda de una, el
+  // detalle completo (candidatos = TODOS los títulos del canal, por
+  // partido) se volvió gigante. Por default la respuesta ahora es liviana
+  // (solo lo que hace falta para el cron real: cuántos se revisaron/
+  // encontraron). El detalle completo (candidatos, excluidos) solo se arma
+  // con ?diagnostico=1 en la URL, para cuando de verdad hace falta
+  // investigar un caso puntual a mano.
+  const modoDiagnostico = ['1', 'true'].includes(String(req.query?.diagnostico || ''));
 
   // BUG confirmado con datos reales (a pedido, vía /diagnostico-ids sobre los
   // 10 partidos de la fecha 2 del Clausura Argentina que no aparecían en
@@ -270,7 +320,7 @@ async function rutaMedia(req, res) {
       motivos.push(`fuera de la ventana de ${DIAS_VENTANA_MEDIA} días (DIAS_VENTANA_MEDIA)`);
     }
     if (motivos.length > 0) {
-      excluidos.push({ id: d.id, partido: `${d.equipo_local} vs ${d.equipo_visitante}`, motivos });
+      if (modoDiagnostico) excluidos.push({ id: d.id, partido: `${d.equipo_local} vs ${d.equipo_visitante}`, motivos });
       return false;
     }
     return true;
@@ -279,8 +329,10 @@ async function rutaMedia(req, res) {
   // detalle (a pedido, diagnóstico): para cada partido revisado, qué títulos
   // encontró en el canal aunque no hayan matcheado — así se distingue "el
   // canal todavía no subió nada" (candidatos: []) de "subió algo pero el
-  // nombre no calzó" (candidatos con títulos, encontrado: false).
-  const resultado = { revisados: (partidos || []).length, encontrados: 0, errores: [], detalle: [], excluidos };
+  // nombre no calzó" (candidatos con títulos, encontrado: false). Recortado
+  // a los primeros 8 títulos en modo diagnóstico (igual alcanza para
+  // reconocer el patrón) y directamente ausente fuera de modo diagnóstico.
+  const resultado = { revisados: (partidos || []).length, encontrados: 0, errores: [], detalle: [], ...(modoDiagnostico ? { excluidos } : {}) };
 
   // Uploads del canal, UNA sola vez por fuente (no por partido): varios
   // partidos comparten la misma fuente, y esta lista no cambia entre uno y
@@ -304,18 +356,28 @@ async function rutaMedia(req, res) {
           partido: `${partido.equipo_local} vs ${partido.equipo_visitante}`,
           fuente: fuente.nombre,
           encontrado: false,
-          candidatos: [],
           errorApi: errorUploads,
         });
         continue;
       }
-      const { videoId, candidatos } = buscarVideoResumenEnLista(partido.equipo_local, partido.equipo_visitante, partido.fecha_expiracion, videos);
+      // Marcador oficial (solo si es Cat.4 y ya está cargado) — se usa para
+      // verificar el video encontrado, ver nota de PALABRAS_EXCLUYEN_VIDEO /
+      // marcadorCoincide en buscarVideoResumenEnLista.
+      const golesOficiales = (partido.goles_local_oficial != null && partido.goles_visitante_oficial != null)
+        ? [partido.goles_local_oficial, partido.goles_visitante_oficial]
+        : null;
+      const { videoId, candidatos } = buscarVideoResumenEnLista(partido.equipo_local, partido.equipo_visitante, partido.fecha_expiracion, videos, golesOficiales);
       resultado.detalle.push({
         id: partido.id,
         partido: `${partido.equipo_local} vs ${partido.equipo_visitante}`,
         fuente: fuente.nombre,
         encontrado: !!videoId,
-        candidatos,
+        // Recortado a los primeros 8 (a pedido: la respuesta se volvió
+        // "demasiado grande" para cron-job.org con la lista completa de
+        // hasta 150 títulos por partido) — alcanza para reconocer el patrón
+        // sin video, sin volver la respuesta gigante. Lista completa solo
+        // con ?diagnostico=1.
+        ...(modoDiagnostico ? { candidatos } : { candidatosCount: candidatos.length, candidatos: candidatos.slice(0, 8) }),
       });
       if (videoId) {
         const { error: errUpdate } = await supabase
