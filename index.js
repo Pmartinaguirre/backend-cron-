@@ -142,6 +142,19 @@ app.get('/diagnostico-ids', (req, res, next) => {
   next();
 }, rutaDiagnosticoIds);
 
+// /ranking-grupo: tabla de posiciones del grupo por ventana de conteo (a
+// pedido: "cada jugador parte de cero diamantes en el grupo desde su fecha
+// de ingreso") — ver src/rutas/rankingGrupo.js. Solo lectura, la llama
+// directo el navegador del jugador desde MisGrupos.jsx y sementomvp.jsx.
+// BUG encontrado (a pedido: "Load failed" en el navegador — esta ruta
+// nunca quedó registrada acá, solo estaba importada; Express devolvía 404
+// sin headers CORS, así que el navegador ni siquiera llegaba a ver el
+// error, quedaba como falla de red genérica).
+app.get('/ranking-grupo', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  next();
+}, rutaRankingGrupo);
+
 // /backfill-equipos: completa equipo_local_id / equipo_visita_id en los
 // partidos que se crearon antes de que se guardaran esos ids. Escribe en la
 // base, así que SÍ lleva secreto. Se corre a mano hasta que devuelva
