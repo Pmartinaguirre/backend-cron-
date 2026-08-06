@@ -18,7 +18,10 @@ const { supabase } = require('../supabaseClient');
 
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || null;
 const CANAL_TNT_SPORTS_CHILE = 'UChCovZlgNh2x6Z57MJ5fhFw';
-const COMPETENCIA_CHILE = 'Primera División Chile';
+// Las 3 competencias chilenas (a pedido: Copa Chile y Copa de la Liga
+// quedaron afuera del alcance original, que solo miraba Primera División —
+// TNT Sports Chile también sube resúmenes de las copas nacionales).
+const COMPETENCIAS_CHILE = ['Primera División Chile', 'Copa Chile', 'Copa de la Liga'];
 // No busca partidos de hace más de esto (a pedido implícito: no tiene
 // sentido seguir gastando cuota de YouTube en partidos viejos que TNT
 // Sports nunca subió, o que Pablo directamente no va a revisar).
@@ -33,6 +36,17 @@ function normalizar(txt) {
     .toLowerCase().trim();
 }
 
+// Última palabra del nombre (a pedido, diagnóstico: "0 encontrados" con la
+// búsqueda funcionando bien apuntaba a que el título de YouTube usa el
+// nombre CORTO del equipo — "Wanderers" en vez de "Santiago Wanderers" — y
+// el match exigía el nombre completo adentro del título). Esta es la
+// palabra que casi siempre sobrevive en un apodo/nombre corto ("Santiago
+// Wanderers" -> "wanderers", "Unión La Calera" -> "calera").
+function ultimaPalabra(nombre) {
+  const palabras = normalizar(nombre).split(/\s+/).filter(Boolean);
+  return palabras[palabras.length - 1] || '';
+}
+
 async function buscarVideoResumen(equipoLocal, equipoVisitante, fechaPartidoISO) {
   const q = encodeURIComponent(`${equipoLocal} ${equipoVisitante} resumen`);
   const publishedAfter = fechaPartidoISO; // el resumen se sube DESPUÉS del partido
@@ -41,20 +55,29 @@ async function buscarVideoResumen(equipoLocal, equipoVisitante, fechaPartidoISO)
   const data = await resp.json();
   if (data.error) {
     console.error('[/media] Error de YouTube API:', data.error.message);
-    return null;
+    return { videoId: null, candidatos: [], errorApi: data.error.message };
   }
   const items = data.items || [];
+  const candidatos = items.map((it) => it.snippet?.title || '(sin título)');
+
   const nl = normalizar(equipoLocal);
   const nv = normalizar(equipoVisitante);
-  // Solo se toma un resultado si el título menciona a los DOS equipos (a
-  // pedido implícito: mejor no mostrar nada a mostrar el video equivocado
-  // de otro partido — Pablo lo corrige a mano si hace falta desde la app).
+  const nlCorta = ultimaPalabra(equipoLocal);
+  const nvCorta = ultimaPalabra(equipoVisitante);
+
+  // Dos pasadas: primero el nombre completo (más estricta), y si nada
+  // matchea así, el nombre corto (último apellido/palabra del club) — así
+  // "Santiago Wanderers 2-1 U. La Calera | RESUMEN" también matchea aunque
+  // el video no use el nombre oficial completo de ninguno de los dos.
   const match = items.find((it) => {
     const titulo = normalizar(it.snippet?.title);
     return titulo.includes(nl) && titulo.includes(nv);
+  }) || items.find((it) => {
+    const titulo = normalizar(it.snippet?.title);
+    return nlCorta && nvCorta && titulo.includes(nlCorta) && titulo.includes(nvCorta);
   });
-  if (!match) return null;
-  return match.id?.videoId || null;
+
+  return { videoId: match?.id?.videoId || null, candidatos };
 }
 
 async function rutaMedia(req, res) {
@@ -72,7 +95,7 @@ async function rutaMedia(req, res) {
     .from('desafios_mvp')
     .select('id, pregunta, equipo_local, equipo_visitante, fecha_expiracion, goles_local_oficial, goles_visitante_oficial')
     .eq('categoria', 4)
-    .eq('tema', COMPETENCIA_CHILE)
+    .in('tema', COMPETENCIAS_CHILE)
     .eq('esta_activo', true)
     .eq('media_video_corregido', false)
     .is('media_video_url', null)
@@ -84,11 +107,22 @@ async function rutaMedia(req, res) {
     return res.status(500).json({ error: error.message });
   }
 
-  const resultado = { revisados: (partidos || []).length, encontrados: 0, errores: [] };
+  // detalle (a pedido, diagnóstico): para cada partido revisado, qué títulos
+  // encontró en el canal aunque no hayan matcheado — así se distingue "TNT
+  // todavía no subió nada" (candidatos: []) de "subió algo pero el nombre no
+  // calzó" (candidatos con títulos, encontrado: false).
+  const resultado = { revisados: (partidos || []).length, encontrados: 0, errores: [], detalle: [] };
 
   for (const partido of partidos || []) {
     try {
-      const videoId = await buscarVideoResumen(partido.equipo_local, partido.equipo_visitante, partido.fecha_expiracion);
+      const { videoId, candidatos, errorApi } = await buscarVideoResumen(partido.equipo_local, partido.equipo_visitante, partido.fecha_expiracion);
+      resultado.detalle.push({
+        id: partido.id,
+        partido: `${partido.equipo_local} vs ${partido.equipo_visitante}`,
+        encontrado: !!videoId,
+        candidatos,
+        ...(errorApi ? { errorApi } : {}),
+      });
       if (videoId) {
         const { error: errUpdate } = await supabase
           .from('desafios_mvp')
