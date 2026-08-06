@@ -24,6 +24,7 @@ const { rutaDiagnosticoCobertura } = require('./src/rutas/diagnosticoCobertura')
 const { rutaDiagnosticoPartido } = require('./src/rutas/diagnosticoPartido');
 const { rutaDiagnosticoIds } = require('./src/rutas/diagnosticoIds');
 const { rutaGanadorSemanal } = require('./src/rutas/ganadorSemanal');
+const { rutaRankingGrupo } = require('./src/rutas/rankingGrupo');
 
 const app = express();
 // Necesario para leer req.body en /invitar-a-grupo (POST con JSON) — las
