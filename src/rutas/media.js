@@ -223,33 +223,52 @@ async function rutaMedia(req, res) {
   }
   const competenciasABuscar = competenciaFiltro ? [competenciaFiltro] : TODAS_LAS_COMPETENCIAS_CON_FUENTE;
 
-  // BUG encontrado (a pedido: "encontró 4 de 16 partidos, no busca bien"):
-  // el filtro `categoria = 4` dejaba AFUERA de la búsqueda a todos los
-  // partidos Cat.5 (solo L/E/V, sin marcador exacto) — ni siquiera se
-  // intentaban, sin importar cuán bien funcionara el matching de nombres.
-  // La Liga Profesional Argentina tiene partidos de las dos categorías; acá
-  // debe entrar cualquier fútbol real terminado, Cat.4 O Cat.5.
-  const { data: partidos, error } = await supabase
+  // Corregido: todos los partidos son Cat.4 (marcador exacto) por default —
+  // el admin de cada grupo filtra a L/E/V solo en SU panel, eso no cambia la
+  // categoría real del desafío en la base. Volvió a `categoria = 4`.
+  //
+  // Para entender por qué "encontró 4 de 16" (a pedido, diagnóstico): en vez
+  // de aplicar TODOS los filtros de una y perder de vista a los que quedan
+  // afuera, se trae primero TODA la competencia (solo categoria+tema+activo)
+  // y acá abajo se clasifica cada partido: cuál de los filtros (ya tiene
+  // video, corrección manual, sin resultado oficial cargado, fuera de la
+  // ventana de días) lo saca de la búsqueda — así se ve la razón real en vez
+  // de adivinar.
+  const { data: candidatosBrutos, error } = await supabase
     .from('desafios_mvp')
-    .select('id, pregunta, tema, equipo_local, equipo_visitante, fecha_expiracion, goles_local_oficial, goles_visitante_oficial')
-    .in('categoria', [4, 5])
-    .in('tema', competenciasABuscar)
-    .eq('esta_activo', true)
-    .eq('media_video_corregido', false)
-    .is('media_video_url', null)
-    .not('goles_local_oficial', 'is', null)
-    .gte('fecha_expiracion', limite.toISOString());
+    .select('id, pregunta, tema, equipo_local, equipo_visitante, fecha_expiracion, goles_local_oficial, goles_visitante_oficial, media_video_url, media_video_corregido, esta_activo')
+    .eq('categoria', 4)
+    .in('tema', competenciasABuscar);
 
   if (error) {
     console.error('[/media] Error leyendo desafios_mvp:', error);
     return res.status(500).json({ error: error.message });
   }
 
+  // excluidos (a pedido, diagnóstico): partidos de la(s) competencia(s)
+  // pedidas que NO entraron a la búsqueda, con el motivo exacto.
+  const excluidos = [];
+  const partidos = (candidatosBrutos || []).filter((d) => {
+    const motivos = [];
+    if (!d.esta_activo) motivos.push('esta_activo = false');
+    if (d.media_video_corregido) motivos.push('media_video_corregido = true (ya lo corrigió un admin a mano)');
+    if (d.media_video_url) motivos.push('ya tiene media_video_url cargado');
+    if (d.goles_local_oficial == null) motivos.push('sin goles_local_oficial (todavía no se cargó el resultado oficial, ver /resolver)');
+    if (d.fecha_expiracion && new Date(d.fecha_expiracion).getTime() < limite.getTime()) {
+      motivos.push(`fuera de la ventana de ${DIAS_VENTANA_MEDIA} días (DIAS_VENTANA_MEDIA)`);
+    }
+    if (motivos.length > 0) {
+      excluidos.push({ id: d.id, partido: `${d.equipo_local} vs ${d.equipo_visitante}`, motivos });
+      return false;
+    }
+    return true;
+  });
+
   // detalle (a pedido, diagnóstico): para cada partido revisado, qué títulos
   // encontró en el canal aunque no hayan matcheado — así se distingue "el
   // canal todavía no subió nada" (candidatos: []) de "subió algo pero el
   // nombre no calzó" (candidatos con títulos, encontrado: false).
-  const resultado = { revisados: (partidos || []).length, encontrados: 0, errores: [], detalle: [] };
+  const resultado = { revisados: (partidos || []).length, encontrados: 0, errores: [], detalle: [], excluidos };
 
   // Uploads del canal, UNA sola vez por fuente (no por partido): varios
   // partidos comparten la misma fuente, y esta lista no cambia entre uno y
