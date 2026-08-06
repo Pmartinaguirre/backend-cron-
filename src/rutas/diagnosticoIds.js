@@ -22,7 +22,7 @@ async function rutaDiagnosticoIds(req, res) {
 
   const { data, error } = await supabase
     .from('desafios_mvp')
-    .select('id, pregunta, tema, subtema, categoria, esta_activo, media_video_url, media_video_corregido, goles_local_oficial, goles_visitante_oficial, fecha_expiracion, equipo_local, equipo_visitante')
+    .select('id, pregunta, tema, subtema, categoria, esta_activo, media_video_url, media_video_corregido, goles_local_oficial, goles_visitante_oficial, fecha_expiracion, equipo_local, equipo_visitante, fixture_id_api, estado_partido')
     .in('id', ids);
 
   if (error) {
