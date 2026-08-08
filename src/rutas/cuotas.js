@@ -18,7 +18,7 @@
 const DIAS_VENTANA_CUOTAS = Number(process.env.DIAS_VENTANA_CUOTAS) || 10;
 
 const { supabase } = require('../supabaseClient');
-const { obtenerCuotas, obtenerEstadoFixture } = require('../apiFootball');
+const { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue } = require('../apiFootball');
 
 // HORARIOS "TBD" SIN CONFIRMAR (a pedido, bug reportado: Libertadores del
 // 11 y 18 de agosto ya tenían horario publicado en API-Football y la app
@@ -49,7 +49,7 @@ async function rutaCuotas(req, res) {
   const limiteTBD = new Date(ahora);
   limiteTBD.setDate(limiteTBD.getDate() + DIAS_VENTANA_TBD);
 
-  const columnas = 'id, pregunta, fixture_id_api, categoria, fecha_expiracion, estado_partido, cuota_local, estadio, arbitro';
+  const columnas = 'id, pregunta, fixture_id_api, categoria, fecha_expiracion, estado_partido, cuota_local, estadio, estadio_ciudad, estadio_pais, estadio_capacidad, estadio_cesped, estadio_venue_id, arbitro, arbitro_pais';
 
   // Estadio + árbitro (a pedido, "Información del partido" en la app): se
   // traen JUNTO con las cuotas, en la misma corrida — mismo criterio que
@@ -65,9 +65,14 @@ async function rutaCuotas(req, res) {
     .in('categoria', [4, 5])
     .eq('esta_activo', true)
     .not('fixture_id_api', 'is', null)
-    .or('cuota_local.is.null,estadio.is.null,arbitro.is.null')
+    .or('cuota_local.is.null,estadio.is.null,arbitro.is.null,estadio_capacidad.is.null')
     .gte('fecha_expiracion', ahora.toISOString())
-    .lte('fecha_expiracion', limite.toISOString());
+    .lte('fecha_expiracion', limite.toISOString())
+    // Los partidos que juegan más pronto primero (a pedido, junto con el
+    // tope por corrida de más abajo: si hay que repartir el trabajo en
+    // varias corridas, que le toque antes al que menos tiempo tiene para
+    // conseguir su cuota/estadio/árbitro, no a uno cualquiera).
+    .order('fecha_expiracion', { ascending: true });
 
   if (error) {
     console.error('[/cuotas] Error leyendo desafios_mvp:', error);
@@ -84,7 +89,8 @@ async function rutaCuotas(req, res) {
     .eq('esta_activo', true)
     .eq('estado_partido', 'TBD')
     .not('fixture_id_api', 'is', null)
-    .lte('fecha_expiracion', limiteTBD.toISOString());
+    .lte('fecha_expiracion', limiteTBD.toISOString())
+    .order('fecha_expiracion', { ascending: true });
 
   if (errorTBD) {
     console.error('[/cuotas] Error leyendo TBD de desafios_mvp:', errorTBD);
@@ -93,9 +99,30 @@ async function rutaCuotas(req, res) {
   // Merge sin duplicados (un partido puede caer en las dos listas).
   const porId = new Map();
   [...(partidosVentana || []), ...(partidosTBD || [])].forEach((p) => porId.set(p.id, p));
-  const partidos = [...porId.values()];
+  const todosLosPartidos = [...porId.values()];
 
-  const resultado = { revisados: partidos.length, actualizados: 0, sinCuotaTodavia: 0, errores: [] };
+  // TOPE POR CORRIDA (a pedido, bug reportado: cron-job.org viene fallando
+  // por "tiempo de espera agotado" varios días seguidos, siempre justo en
+  // los 30s del timeout configurado). Causa: este endpoint procesaba TODOS
+  // los partidos de la ventana en una sola corrida, en serie, con hasta 3
+  // llamadas a API-Football por partido + una pausa fija de 300ms entre
+  // cada uno — con la Champions arrancando (muchos partidos entrando de
+  // golpe a la ventana de 10 días), esa cuenta pasa fácil los 30s. Ahora se
+  // procesa como máximo esta cantidad por corrida; el resto queda para la
+  // PRÓXIMA corrida (cada 10 min, según cron-job.org) — es seguro porque el
+  // query de arriba ya es idempotente (siempre trae primero lo que todavía
+  // le falta algo), así que no hay riesgo de dejar un partido colgado para
+  // siempre, solo tarda una corrida más en completarse.
+  const MAX_PARTIDOS_POR_CORRIDA = Number(process.env.MAX_PARTIDOS_POR_CORRIDA_CUOTAS) || 15;
+  const partidos = todosLosPartidos.slice(0, MAX_PARTIDOS_POR_CORRIDA);
+
+  const resultado = {
+    revisados: partidos.length,
+    pendientesProximaCorrida: Math.max(0, todosLosPartidos.length - partidos.length),
+    actualizados: 0,
+    sinCuotaTodavia: 0,
+    errores: [],
+  };
 
   for (const partido of partidos) {
     try {
@@ -109,15 +136,18 @@ async function rutaCuotas(req, res) {
           payload.cuota_visita = cuotas.cuota_visita;
         }
       }
-      // Estadio/árbitro/fecha real: se pide si falta alguno de los dos
-      // primeros, O si el partido sigue en 'TBD' (hora sin confirmar).
-      // Comparte la misma llamada a /fixtures?id= que ya usa
-      // obtenerEstadoFixture (la reaprovecha /vivo y /resolver), así que no
-      // es una consulta nueva a la cuota de API-Football.
-      if (partido.estadio == null || partido.arbitro == null || partido.estado_partido === 'TBD') {
+      // Estadio/árbitro/fecha real: se pide si falta alguno de los datos, O
+      // si el partido sigue en 'TBD' (hora sin confirmar). Comparte la misma
+      // llamada a /fixtures?id= que ya usa obtenerEstadoFixture (la
+      // reaprovecha /vivo y /resolver), así que no es una consulta nueva a
+      // la cuota de API-Football.
+      if (partido.estadio == null || partido.arbitro == null || partido.estadio_capacidad == null || partido.estado_partido === 'TBD') {
         const info = await obtenerEstadoFixture(partido.fixture_id_api);
-        if (info?.estadio != null) payload.estadio = info.estadio;
+        if (info?.estadioNombre != null) payload.estadio = info.estadioNombre;
+        if (info?.estadioCiudad != null) payload.estadio_ciudad = info.estadioCiudad;
+        if (info?.estadioVenueId != null) payload.estadio_venue_id = info.estadioVenueId;
         if (info?.arbitro != null) payload.arbitro = info.arbitro;
+        if (info?.arbitroPais != null) payload.arbitro_pais = info.arbitroPais;
         // Fecha/hora real (mismo criterio que /vivo al reprogramar un PST):
         // si la API ya no dice 'TBD' o la fecha cambió de verdad, se corrige
         // acá — así el horario placeholder (16hrs) se reemplaza por el real
@@ -134,6 +164,21 @@ async function rutaCuotas(req, res) {
             payload.fecha_expiracion = fechaNueva.toISOString();
             console.log(`[/cuotas] Partido ${partido.id} (${partido.pregunta}) horario corregido: ${partido.fecha_expiracion} -> ${fechaNueva.toISOString()}`);
           }
+        }
+        // Capacidad/césped/país del estadio (a pedido): pide /venues?id=
+        // SOLO si todavía falta la capacidad — es una llamada aparte, no
+        // vale la pena repetirla una vez que el estadio ya está completo
+        // (a diferencia de estadio/árbitro/fecha, que pueden llegar tarde
+        // y conviene reintentar). El "año de fundación" que también se
+        // pidió NO lo entrega este endpoint de API-Football (solo trae
+        // name/city/country/capacity/surface/image) — queda pendiente si
+        // alguna vez aparece en la API.
+        const venueId = info?.estadioVenueId || partido.estadio_venue_id;
+        if (partido.estadio_capacidad == null && venueId) {
+          const venue = await obtenerDatosVenue(venueId);
+          if (venue?.pais != null) payload.estadio_pais = venue.pais;
+          if (venue?.capacidad != null) payload.estadio_capacidad = venue.capacidad;
+          if (venue?.cesped != null) payload.estadio_cesped = venue.cesped;
         }
       }
       if (Object.keys(payload).length === 0) {
@@ -157,7 +202,7 @@ async function rutaCuotas(req, res) {
     await new Promise((r) => setTimeout(r, 300));
   }
 
-  console.log(`[/cuotas] ${resultado.actualizados} actualizados, ${resultado.sinCuotaTodavia} sin cambios todavía, ${resultado.errores.length} errores.`);
+  console.log(`[/cuotas] ${resultado.actualizados} actualizados, ${resultado.sinCuotaTodavia} sin cambios todavía, ${resultado.errores.length} errores, ${resultado.pendientesProximaCorrida} quedan para la próxima corrida.`);
   res.json(resultado);
 }
 
