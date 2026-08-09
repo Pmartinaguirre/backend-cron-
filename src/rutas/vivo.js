@@ -53,6 +53,12 @@ async function rutaVivo(req, res) {
         estado_partido: estado.estado,
         goleadores_local: estado.goleadoresLocal,
         goleadores_visita: estado.goleadoresVisita,
+        // Roja a jugador de cancha (a pedido, mini tarjeta): ver
+        // huboRojaDeCancha en apiFootball.js. Se pisa siempre (no solo
+        // cuando es true) porque, a diferencia de los penales, acá false
+        // SÍ es un dato válido (todavía no expulsaron a nadie).
+        roja_local: estado.rojaLocal,
+        roja_visita: estado.rojaVisita,
         // Tanda de penales (a pedido): null hasta que arranca la definición,
         // así que solo se pisa el valor guardado cuando la API ya trae algo
         // — si se guardara siempre (incluso null), un partido que ya venía
