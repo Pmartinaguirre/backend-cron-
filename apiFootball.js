@@ -102,14 +102,32 @@ function construirSetGolesAnulados(eventos) {
 // — hay que deducirlo cruzando el evento de tarjeta con la alineación
 // (lineups, que ya viene en esta misma llamada a /fixtures?id=).
 //
-// Se arma, por equipo, el set de ids de jugadores que están EN CANCHA en
-// cada momento: arranca con el 11 titular (lineups[].startXI) y se va
-// actualizando con cada cambio ("subst": `player` es el que ENTRA, `assist`
-// el que SALE — mismo criterio que usa obtenerDetalleFixture más abajo). Un
-// evento "Card" con detail "Red Card" o "Second Yellow card" (roja por doble
-// amarilla) cuenta como roja de cancha solo si, en ESE momento, el jugador
-// está en el set — si no está (suplente que nunca entró, cuerpo técnico sin
-// ficha de jugador, etc.) se descarta como roja a la banca.
+// Se arman, por equipo, DOS sets de ids: `enCancha` (arranca con el 11
+// titular, lineups[].startXI) y `banca` (arranca con los suplentes,
+// lineups[].substitutes). Los dos se actualizan con cada cambio ("subst":
+// `player` es el que ENTRA, `assist` el que SALE — mismo criterio que usa
+// obtenerDetalleFixture más abajo): al entrar, un suplente pasa de `banca` a
+// `enCancha`.
+//
+// BUG encontrado (a pedido, caso real: Coquimbo Unido vs D. La Serena — dos
+// rojas del visitante en los events, "S. Diaz" y "F. Gutierrez", con
+// jugadorId que NO aparece ni en titulares ni en suplentes de NINGÚN equipo):
+// API-Football a veces manda un jugadorId en el evento de tarjeta que no
+// calza con ningún id de la alineación (dato inconsistente de la propia API,
+// no un bug nuestro — pasa sobre todo en ligas chicas). Con la lógica vieja
+// (¿está en el set de "en cancha"? si no, se descarta) estos casos se
+// perdían SIEMPRE, aunque fueran rojas reales a jugadores de campo. Ahora se
+// distinguen 3 casos:
+//   1) El id está en `enCancha` -> roja de cancha (cuenta).
+//   2) El id está en `banca` (suplente conocido que NUNCA entró) -> roja a
+//      la banca, se descarta (esto es justo lo que pidió Pablo).
+//   3) El id no aparece en NINGUNO de los dos sets (dato inconsistente de la
+//      API) -> se cuenta igual. Mejor mostrar de más una roja rara que
+//      ocultar una real — el caso 2, que sí se conoce con certeza, sigue
+//      excluido.
+// Sin ficha de jugador (jugadorId null — típico de una roja al CUERPO
+// TÉCNICO, ej. el entrenador expulsado) se descarta directo, no entra a
+// ninguno de los 3 casos de arriba.
 //
 // Se recorren los eventos en orden cronológico (elapsed+extra) para que un
 // cambio anterior a la roja ya haya movido al jugador correspondiente.
@@ -117,9 +135,14 @@ function huboRojaDeCancha(fx) {
   const idLocal = fx.teams?.home?.id;
   const enCanchaLocal = new Set();
   const enCanchaVisita = new Set();
+  const bancaLocal = new Set();
+  const bancaVisita = new Set();
   (fx.lineups || []).forEach((l) => {
-    const set = l.team?.id === idLocal ? enCanchaLocal : enCanchaVisita;
-    (l.startXI || []).forEach((x) => { if (x.player?.id != null) set.add(x.player.id); });
+    const esLocal = l.team?.id === idLocal;
+    const enCancha = esLocal ? enCanchaLocal : enCanchaVisita;
+    const banca = esLocal ? bancaLocal : bancaVisita;
+    (l.startXI || []).forEach((x) => { if (x.player?.id != null) enCancha.add(x.player.id); });
+    (l.substitutes || []).forEach((x) => { if (x.player?.id != null) banca.add(x.player.id); });
   });
   const eventosOrdenados = [...(fx.events || [])].sort((a, b) => {
     const ea = (a.time?.elapsed ?? 0) + (a.time?.extra ?? 0) / 100;
@@ -130,15 +153,22 @@ function huboRojaDeCancha(fx) {
   let rojaVisita = false;
   eventosOrdenados.forEach((ev) => {
     const esDelLocal = ev.team?.id === idLocal;
-    const set = esDelLocal ? enCanchaLocal : enCanchaVisita;
+    const enCancha = esDelLocal ? enCanchaLocal : enCanchaVisita;
+    const banca = esDelLocal ? bancaLocal : bancaVisita;
     if (ev.type === 'subst') {
-      if (ev.assist?.id != null) set.delete(ev.assist.id); // sale
-      if (ev.player?.id != null) set.add(ev.player.id); // entra
+      if (ev.assist?.id != null) enCancha.delete(ev.assist.id); // sale
+      if (ev.player?.id != null) { enCancha.add(ev.player.id); banca.delete(ev.player.id); } // entra
       return;
     }
     if (ev.type === 'Card' && (ev.detail === 'Red Card' || ev.detail === 'Second Yellow card')) {
       const jugadorId = ev.player?.id;
-      if (jugadorId != null && set.has(jugadorId)) {
+      if (jugadorId == null) return; // sin ficha de jugador -> cuerpo técnico, se descarta
+      const esDeCancha = enCancha.has(jugadorId)
+        ? true
+        : banca.has(jugadorId)
+          ? false // suplente conocido que nunca entró -> banca
+          : true; // id no aparece en la alineación (dato inconsistente de la api) -> se asume cancha
+      if (esDeCancha) {
         if (esDelLocal) rojaLocal = true; else rojaVisita = true;
       }
     }
