@@ -44,6 +44,11 @@ const FUENTES = [
     competencias: ['Primera División Chile', 'Copa Chile', 'Copa de la Liga'],
     campo: 'media_video_url',
     prioridad: 1,
+    // Canal DEDICADO (solo sube resúmenes de estas 3 competencias) — margen
+    // amplio y sin exigir la palabra "resumen": el criterio estricto de
+    // ESPN Fans (ver más abajo) no hace falta acá, este canal no trae ruido
+    // de otras ligas/deportes.
+    margenPublicacionMs: -3 * 3600 * 1000,
   },
   {
     nombre: 'Liga Profesional de Fútbol de la AFA',
@@ -51,6 +56,7 @@ const FUENTES = [
     competencias: ['Primera División Argentina'],
     campo: 'media_video_url',
     prioridad: 1,
+    margenPublicacionMs: -3 * 3600 * 1000,
   },
   {
     nombre: 'ESPN Fans',
@@ -64,6 +70,36 @@ const FUENTES = [
     competencias: ['Primera División Argentina'],
     campo: 'media_video_url_espn',
     prioridad: 2,
+    // BUG encontrado (a pedido: "a Boca trajo cualquier cosa y al de
+    // Independiente también se equivocó"): a diferencia de TNT Sports Chile
+    // y la AFA (canales DEDICADOS a un solo torneo, donde casi todo lo que
+    // suben es resumen de ESE campeonato), ESPN Fans es un canal genérico
+    // que sube de TODO — otras ligas, otros países, entrevistas,
+    // conferencias, otros deportes (ver captura: Udinese, Barcelona,
+    // Nottingham Forest, MotoGP...). Con la ventana de publicación vieja
+    // (arrancaba 3hs ANTES del kickoff) y sin exigir la palabra "RESUMEN" en
+    // el título, el matcher podía enganchar cualquier video publicado en esa
+    // ventana que mencionara los mismos nombres de equipo por otro motivo
+    // (análisis previo, u otro club con nombre parecido en otro país —
+    // "Independiente" solo, por ejemplo, también podría calzar con
+    // Independiente del Valle o Independiente Medellín).
+    // Pablo confirmó el patrón real de este canal: "video posterior a la
+    // hora de término del partido, Equipo N-N Equipo | RESUMEN" — dos
+    // filtros nuevos, SOLO para esta fuente:
+    //   1) requiereMarcadorResumen: el título tiene que traer la palabra
+    //      "resumen" en algún lado (ver buscarVideoResumenEnLista).
+    //   2) margenPublicacionMs POSITIVO (en vez del -3h que usan TNT/AFA):
+    //      solo entran candidatos publicados DESPUÉS de kickoff + este
+    //      margen, nunca antes — un partido dura ~105-120' con descuentos,
+    //      así que 2hs después del kickoff es un piso conservador para "ya
+    //      terminó y el canal tuvo tiempo de subir el resumen".
+    requiereMarcadorResumen: true,
+    // 1h45 (105min): un partido de liga regular (sin alargue) dura ~90' +
+    // entretiempo (15') + descuentos — un poco menos de 2hs de reloj real
+    // entre el pitazo inicial y el final. Un piso más chico que 2hs para no
+    // descartar por accidente un resumen subido rápido, pero igual bien
+    // adentro del partido (nunca antes del entretiempo).
+    margenPublicacionMs: 105 * 60 * 1000,
   },
 ];
 // Índice competencia -> LISTA de fuentes (a pedido: Argentina ahora tiene
@@ -232,6 +268,22 @@ function extraerMarcadorDeTitulo(titulo) {
   return [Number(m[1]), Number(m[2])];
 }
 
+// Segmento del título que trae el marcador (a pedido, canales GENÉRICOS
+// como ESPN Fans: "CUARTA DERROTA DE RIVER Y 0 PUNTOS DE 12 EN EL TORNEO |
+// Tigre 1-0 River | RESUMEN"): el titular editorial de ANTES del primer "|"
+// puede mencionar a cualquier equipo por su cuenta (acá, a "River", que
+// nisiquiera es el que perdió el partido en cuestión desde la perspectiva
+// del otro equipo) — si la búsqueda de nombres mira el título COMPLETO,
+// puede confundirse con ese texto suelto. Separando por "|" y quedándose
+// con el pedazo que de verdad tiene el marcador ("Tigre 1-0 River"), la
+// búsqueda de nombres queda acotada a la parte confiable del título. Si no
+// hay ningún "|" o ninguna parte trae marcador, devuelve el título entero
+// tal cual (mejor no acotar de más que perder el video).
+function segmentoConMarcador(titulo) {
+  const partes = String(titulo || '').split('|').map((s) => s.trim());
+  return partes.find((p) => extraerMarcadorDeTitulo(p)) || titulo;
+}
+
 // TABLA DE ALIAS POR EQUIPO (a pedido, "los patrones de los títulos son
 // similares y sabemos el canal... te puedo dar el patrón exacto"): cada canal
 // tiene un apodo FIJO por equipo, casi siempre distinto del nombre completo
@@ -352,19 +404,42 @@ function buscarPorAlias(equipoLocal, equipoVisitante, candidatosVideos, marcador
 // encontrado sea DE VERDAD ese partido (ver PALABRAS_EXCLUYEN_VIDEO y bug de
 // Reserva/Proyección más arriba). null si es Cat.5 o todavía no hay marcador
 // (en ese caso no se puede verificar por marcador, solo por nombre).
-function buscarVideoResumenEnLista(equipoLocal, equipoVisitante, fechaPartidoISO, videos, golesOficiales = null) {
+//
+// opciones (a pedido, ver ESPN Fans en FUENTES más arriba): canales
+// GENÉRICOS (no dedicados a un solo torneo) necesitan filtros más estrictos
+// que los canales dedicados, para no engancharse con contenido de otras
+// ligas/deportes que también mencione los mismos nombres de equipo.
+//   - margenPublicacionMs: además del `desde`, en vez de fijo -3h. Puede ser
+//     POSITIVO (exige publicado bastante DESPUÉS del kickoff, no antes) para
+//     un canal que también sube contenido previo al partido.
+//   - requiereMarcadorResumen: el título tiene que traer la palabra
+//     "resumen" en algún lado — filtra entrevistas, previas, otros deportes.
+function buscarVideoResumenEnLista(equipoLocal, equipoVisitante, fechaPartidoISO, videos, golesOficiales = null, opciones = {}) {
+  const { margenPublicacionMs = -3 * 3600 * 1000, requiereMarcadorResumen = false } = opciones;
   const fechaValida = fechaPartidoISO ? new Date(fechaPartidoISO) : null;
-  // Solo videos publicados DESPUÉS del partido (con 3hs de margen para
-  // partidos que ya estaban en tiempo de descuento cuando se guardó la
-  // fecha) — evita que un resumen viejo de otro cruce entre los mismos dos
-  // equipos, de una fecha anterior del campeonato, se cuele como si fuera
-  // el de este partido.
-  const desde = fechaValida && !isNaN(fechaValida.getTime()) ? fechaValida.getTime() - 3 * 3600 * 1000 : null;
+  // Solo videos publicados DESPUÉS del partido (margen configurable por
+  // fuente — ver comentario de arriba) — evita que un resumen viejo de otro
+  // cruce entre los mismos dos equipos, de una fecha anterior del
+  // campeonato (o contenido previo al partido, en un canal genérico), se
+  // cuele como si fuera el de este partido.
+  const desde = fechaValida && !isNaN(fechaValida.getTime()) ? fechaValida.getTime() + margenPublicacionMs : null;
   const candidatosVideos = (desde
     ? videos.filter((v) => !v.publicadoEn || new Date(v.publicadoEn).getTime() >= desde)
     : videos
-  ).filter((v) => !PALABRAS_EXCLUYEN_VIDEO.test(v.titulo));
+  )
+    .filter((v) => !PALABRAS_EXCLUYEN_VIDEO.test(v.titulo))
+    .filter((v) => !requiereMarcadorResumen || /resum/i.test(v.titulo));
   const candidatos = candidatosVideos.map((v) => v.titulo);
+
+  // Para canales genéricos (requiereMarcadorResumen): la búsqueda de
+  // NOMBRES se acota al segmento del título que tiene el marcador (ver
+  // segmentoConMarcador más arriba) — el resto de las comprobaciones
+  // (marcadorCoincide, `candidatos` que se devuelve) siguen mirando el
+  // título completo, esto SOLO cambia contra qué texto se buscan los
+  // nombres/alias de los equipos.
+  const videosParaNombres = requiereMarcadorResumen
+    ? candidatosVideos.map((v) => ({ ...v, titulo: segmentoConMarcador(v.titulo) }))
+    : candidatosVideos;
 
   const nl = normalizar(equipoLocal);
   const nv = normalizar(equipoVisitante);
@@ -396,12 +471,12 @@ function buscarVideoResumenEnLista(equipoLocal, equipoVisitante, fechaPartidoISO
   // de "Barracas Central vs Racing" — matcheaba por la palabra suelta
   // "central", que las dos tienen): si el equipo tiene más de una palabra
   // significativa, TIENEN que calzar TODAS, no cualquiera.
-  const match = buscarPorAlias(equipoLocal, equipoVisitante, candidatosVideos, marcadorCoincide)
-    || candidatosVideos.find((v) => {
+  const match = buscarPorAlias(equipoLocal, equipoVisitante, videosParaNombres, marcadorCoincide)
+    || videosParaNombres.find((v) => {
       const titulo = normalizar(v.titulo);
       return titulo.includes(nl) && titulo.includes(nv) && marcadorCoincide(v.titulo);
     })
-    || candidatosVideos.find((v) => {
+    || videosParaNombres.find((v) => {
       const titulo = normalizar(v.titulo);
       const tieneLocal = palabrasLocal.every((p) => titulo.includes(p));
       const tieneVisita = palabrasVisita.every((p) => titulo.includes(p));
@@ -562,7 +637,10 @@ async function rutaMedia(req, res) {
         const golesOficiales = (partido.goles_local_oficial != null && partido.goles_visitante_oficial != null)
           ? [partido.goles_local_oficial, partido.goles_visitante_oficial]
           : null;
-        const { videoId, candidatos } = buscarVideoResumenEnLista(partido.equipo_local, partido.equipo_visitante, partido.fecha_expiracion, videos, golesOficiales);
+        const { videoId, candidatos } = buscarVideoResumenEnLista(partido.equipo_local, partido.equipo_visitante, partido.fecha_expiracion, videos, golesOficiales, {
+          margenPublicacionMs: fuente.margenPublicacionMs,
+          requiereMarcadorResumen: fuente.requiereMarcadorResumen,
+        });
         resultado.detalle.push({
           id: partido.id,
           partido: `${partido.equipo_local} vs ${partido.equipo_visitante}`,
