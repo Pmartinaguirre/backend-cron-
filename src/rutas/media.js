@@ -568,12 +568,15 @@ async function rutaMedia(req, res) {
           partido: `${partido.equipo_local} vs ${partido.equipo_visitante}`,
           fuente: fuente.nombre,
           encontrado: !!videoId,
-          // Recortado a los primeros 8 (a pedido: la respuesta se volvió
-          // "demasiado grande" para cron-job.org con la lista completa de
-          // hasta 150 títulos por partido) — alcanza para reconocer el patrón
-          // sin video, sin volver la respuesta gigante. Lista completa solo
-          // con ?diagnostico=1.
-          ...(modoDiagnostico ? { candidatos } : { candidatosCount: candidatos.length, candidatos: candidatos.slice(0, 8) }),
+          // SIN candidatos fuera de diagnóstico (a pedido, bug reportado:
+          // "salida demasiado grande", cron-job.org corta la respuesta):
+          // antes acá quedaban hasta 8 TÍTULOS completos por fuente — con
+          // Argentina ahora teniendo DOS fuentes por partido (AFA + ESPN
+          // Fans), esa lista se duplicó y volvió a pasarse del límite. Fuera
+          // de diagnóstico solo queda el número (candidatosCount), sin
+          // texto — el detalle completo de títulos sigue disponible con
+          // ?diagnostico=1 para cuando de verdad hace falta investigar.
+          ...(modoDiagnostico ? { candidatos } : { candidatosCount: candidatos.length }),
         });
         if (videoId) {
           const { error: errUpdate } = await supabase
