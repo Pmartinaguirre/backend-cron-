@@ -24,8 +24,14 @@ async function rutaEquipos(req, res) {
   }
 
   try {
-    const equipos = await obtenerEquiposDeLiga(leagueId, TEMPORADA);
-    res.json({ competencia, equipos });
+    const equiposDetalle = await obtenerEquiposDeLiga(leagueId, TEMPORADA);
+    // `equipos` sigue siendo el array de NOMBRES tal cual antes (a propósito,
+    // retrocompatible): el selector Tier A del Admin y "Equipos que sigue el
+    // grupo" de MisGrupos.jsx ya consumen esta forma. `equiposDetalle` es
+    // NUEVO (a pedido, logos + país en Equipos favoritos de Perfil.jsx) —
+    // mismos equipos, con {nombre, logo, pais}.
+    const equipos = equiposDetalle.map((e) => e.nombre);
+    res.json({ competencia, equipos, equiposDetalle });
   } catch (e) {
     console.error(`[/equipos] Error trayendo equipos de "${competencia}":`, e);
     res.status(500).json({ error: e.message });
