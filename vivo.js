@@ -11,13 +11,30 @@ const { filtrarPendientes, partidosAbandonados } = require('../partidosPendiente
 async function rutaVivo(req, res) {
   const ahoraISO = new Date().toISOString();
 
-  const { data: partidos, error } = await supabase
-    .from('desafios_mvp')
-    .select('id, categoria, fixture_id_api, resultado_oficial, goles_local_oficial, fecha_expiracion, estado_partido')
-    .in('categoria', [4, 5])
-    .eq('esta_activo', true)
-    .not('fixture_id_api', 'is', null)
-    .lte('fecha_expiracion', ahoraISO);
+  // ?id=<desafio_id> (a pedido, backfill puntual): reprocesa UN partido
+  // puntual sin importar su estado ni su fecha — se salta el filtro de
+  // "pendientes" de más abajo. Existe porque /vivo NUNCA vuelve a mirar un
+  // partido que ya llegó a FT (ver filtrarPendientes/ESTADOS_TERMINADOS en
+  // partidosPendientes.js — es decisión a propósito para no gastar cuota en
+  // partidos ya resueltos), así que cualquier campo NUEVO que se agregue acá
+  // (como roja_local/roja_visita) nunca se completa solo para partidos que
+  // ya habían terminado ANTES de que ese campo existiera. Con esto se puede
+  // forzar la actualización de un partido puntual a mano, para probar o
+  // completar datos viejos, sin tener que esperar un partido en vivo nuevo.
+  const idForzado = req.query?.id || null;
+
+  const { data: partidos, error } = idForzado
+    ? await supabase
+        .from('desafios_mvp')
+        .select('id, categoria, fixture_id_api, resultado_oficial, goles_local_oficial, fecha_expiracion, estado_partido')
+        .eq('id', idForzado)
+    : await supabase
+        .from('desafios_mvp')
+        .select('id, categoria, fixture_id_api, resultado_oficial, goles_local_oficial, fecha_expiracion, estado_partido')
+        .in('categoria', [4, 5])
+        .eq('esta_activo', true)
+        .not('fixture_id_api', 'is', null)
+        .lte('fecha_expiracion', ahoraISO);
 
   if (error) {
     console.error('[/vivo] Error leyendo desafios_mvp:', error);
@@ -27,8 +44,9 @@ async function rutaVivo(req, res) {
   // El criterio de "a quién todavía vale la pena preguntarle" vive en
   // src/partidosPendientes.js, compartido con /resolver — ver ahí el detalle
   // de por qué un partido postergado se quedaba consultando para siempre.
-  const pendientes = filtrarPendientes(partidos);
-  const abandonados = partidosAbandonados(partidos);
+  // Con ?id= se salta ESTE filtro a propósito (ver comentario más arriba).
+  const pendientes = idForzado ? (partidos || []) : filtrarPendientes(partidos);
+  const abandonados = idForzado ? [] : partidosAbandonados(partidos);
 
   const resultado = {
     revisados: pendientes.length,
@@ -53,6 +71,19 @@ async function rutaVivo(req, res) {
         estado_partido: estado.estado,
         goleadores_local: estado.goleadoresLocal,
         goleadores_visita: estado.goleadoresVisita,
+        // Roja a jugador de cancha (a pedido, mini tarjeta): ver
+        // huboRojaDeCancha en apiFootball.js. Se pisa siempre (no solo
+        // cuando es true) porque, a diferencia de los penales, acá false
+        // SÍ es un dato válido (todavía no expulsaron a nadie).
+        roja_local: estado.rojaLocal,
+        roja_visita: estado.rojaVisita,
+        // Tanda de penales (a pedido): null hasta que arranca la definición,
+        // así que solo se pisa el valor guardado cuando la API ya trae algo
+        // — si se guardara siempre (incluso null), un partido que ya venía
+        // con penales cargados podría "perderlos" en una corrida rara donde
+        // la API devuelva null por un instante.
+        ...(estado.penalesLocal != null ? { penales_local: estado.penalesLocal } : {}),
+        ...(estado.penalesVisita != null ? { penales_visita: estado.penalesVisita } : {}),
       };
 
       // PARTIDO REPROGRAMADO: cuando se posterga (PST) o se suspende, la
@@ -85,6 +116,28 @@ async function rutaVivo(req, res) {
         resultado.errores.push({ id: partido.id, error: errUpdate.message });
       } else {
         resultado.actualizados++;
+      }
+
+      // MOMENTUM (a pedido): guardar un snapshot de las estadísticas de este
+      // instante, con su minuto — la serie completa de snapshots de un
+      // partido es lo que después arma el gráfico de "quién domina" (ver
+      // momentum_partido_mvp / crear_tabla_momentum.sql). Solo si hay algo
+      // que guardar (antes del pitazo inicial estadisticas viene vacío) y
+      // solo mientras el partido está EN JUEGO (no tiene sentido seguir
+      // sumando snapshots idénticos durante HT, o después de FT).
+      const ESTADOS_EN_JUEGO = ['1H', '2H', 'ET', 'P', 'BT'];
+      if ((estado.estadisticas || []).length > 0 && ESTADOS_EN_JUEGO.includes(estado.estado)) {
+        const { error: errMomentum } = await supabase.from('momentum_partido_mvp').insert({
+          desafio_id: partido.id,
+          minuto: estado.minuto,
+          minuto_extra: estado.minutoExtra,
+          marcador_local: estado.golesLocal,
+          marcador_visita: estado.golesVisita,
+          estadisticas: estado.estadisticas,
+        });
+        if (errMomentum) {
+          console.error(`[/vivo] Error guardando snapshot de momentum ${partido.id}:`, errMomentum.message);
+        }
       }
     } catch (e) {
       resultado.errores.push({ id: partido.id, error: e.message });
