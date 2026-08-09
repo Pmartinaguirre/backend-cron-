@@ -26,6 +26,14 @@ const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || null;
 // pedido: "los videos del fútbol argentino quedan en la página de la Liga
 // Profesional de Fútbol de la AFA, podemos hacer lo mismo que con TNT
 // Sports?").
+//
+// DOS FUENTES PARA ARGENTINA (a pedido: "ESPN Fans sube más rápido los
+// resúmenes"): cada partido de Primera Argentina ahora se busca en LAS DOS
+// — cada una guarda su link en su propia columna (`campo`), así ninguna le
+// pisa el video a la otra. `prioridad` (1 = más alta) es la que usa el
+// frontend para decidir cuál mostrar primero en la pestaña Media y cuál va
+// solo en el Resumen (ver ModuloMediaPartido en sementomvp.jsx) — acá en el
+// backend no se usa para nada, cada fuente simplemente busca y guarda.
 const FUENTES = [
   {
     nombre: 'TNT Sports Chile',
@@ -34,17 +42,59 @@ const FUENTES = [
     // después de la Primera División — TNT Sports Chile también sube
     // resúmenes de las copas nacionales, no solo del torneo local).
     competencias: ['Primera División Chile', 'Copa Chile', 'Copa de la Liga'],
+    campo: 'media_video_url',
+    prioridad: 1,
   },
   {
     nombre: 'Liga Profesional de Fútbol de la AFA',
     channelId: 'UCJmCVoUfCBQb9lcfXIS8nXQ', // @LigaProfesional
     competencias: ['Primera División Argentina'],
+    campo: 'media_video_url',
+    prioridad: 1,
+  },
+  {
+    nombre: 'ESPN Fans',
+    // Sin channelId fijo a mano (a diferencia de las otras dos fuentes): no
+    // se pudo confirmar el UC... exacto del canal @ESPNFans desde acá, así
+    // que se resuelve UNA vez por corrida via channels.list?forHandle= (ver
+    // resolverChannelId más abajo) y se cachea en memoria — mismo criterio
+    // de "una sola llamada extra por corrida, no por partido" que ya usa
+    // traerUploadsRecientes.
+    handle: '@ESPNFans',
+    competencias: ['Primera División Argentina'],
+    campo: 'media_video_url_espn',
+    prioridad: 2,
   },
 ];
-// Índice competencia -> fuente, para no recorrer FUENTES por cada partido.
-const FUENTE_POR_COMPETENCIA = {};
-FUENTES.forEach((f) => f.competencias.forEach((c) => { FUENTE_POR_COMPETENCIA[c] = f; }));
-const TODAS_LAS_COMPETENCIAS_CON_FUENTE = Object.keys(FUENTE_POR_COMPETENCIA);
+// Índice competencia -> LISTA de fuentes (a pedido: Argentina ahora tiene
+// dos). Antes era una fuente por competencia; con las dos de Argentina, se
+// recorren TODAS las que apliquen y cada una busca/guarda en su propio
+// campo.
+const FUENTES_POR_COMPETENCIA = {};
+FUENTES.forEach((f) => f.competencias.forEach((c) => {
+  if (!FUENTES_POR_COMPETENCIA[c]) FUENTES_POR_COMPETENCIA[c] = [];
+  FUENTES_POR_COMPETENCIA[c].push(f);
+}));
+const TODAS_LAS_COMPETENCIAS_CON_FUENTE = Object.keys(FUENTES_POR_COMPETENCIA);
+
+// Resuelve el channelId de una fuente que solo tiene `handle` (ESPN Fans),
+// cacheado en la propia fuente para no volver a pedirlo en cada partido ni
+// en cada corrida (mutación intencional del objeto de FUENTES — vive
+// mientras el proceso de Node esté arriba, se vuelve a pedir en el próximo
+// deploy/restart, que es exactamente lo que se quiere).
+async function resolverChannelId(fuente) {
+  if (fuente.channelId) return fuente.channelId;
+  if (!fuente.handle) return null;
+  const url = `https://www.googleapis.com/youtube/v3/channels?part=id&forHandle=${encodeURIComponent(fuente.handle)}&key=${YOUTUBE_API_KEY}`;
+  const resp = await fetch(url);
+  const data = await resp.json();
+  const id = data?.items?.[0]?.id || null;
+  if (data.error) {
+    console.error(`[/media] Error resolviendo channelId de ${fuente.handle}:`, data.error.message);
+  }
+  if (id) fuente.channelId = id; // cache en memoria para el resto de esta corrida (y las siguientes, mientras el proceso siga arriba)
+  return id;
+}
 
 // No busca partidos de hace más de esto (a pedido implícito: no tiene
 // sentido seguir gastando cuota de YouTube en partidos viejos que la fuente
@@ -374,7 +424,7 @@ async function rutaMedia(req, res) {
   // "no busques partidos de otras ligas, veamos bien cómo funciona"). Sin el
   // parámetro, se comporta como siempre (todas las competencias con fuente).
   const competenciaFiltro = req.query?.competencia || null;
-  if (competenciaFiltro && !FUENTE_POR_COMPETENCIA[competenciaFiltro]) {
+  if (competenciaFiltro && !FUENTES_POR_COMPETENCIA[competenciaFiltro]) {
     return res.status(400).json({
       error: `"${competenciaFiltro}" no tiene fuente de YouTube configurada.`,
       competenciasDisponibles: TODAS_LAS_COMPETENCIAS_CON_FUENTE,
@@ -408,7 +458,7 @@ async function rutaMedia(req, res) {
   // de adivinar.
   const { data: candidatosBrutos, error } = await supabase
     .from('desafios_mvp')
-    .select('id, pregunta, tema, equipo_local, equipo_visitante, fecha_expiracion, goles_local_oficial, goles_visitante_oficial, resultado_oficial, media_video_url, media_video_corregido, esta_activo')
+    .select('id, pregunta, tema, equipo_local, equipo_visitante, fecha_expiracion, goles_local_oficial, goles_visitante_oficial, resultado_oficial, media_video_url, media_video_url_espn, media_video_corregido, esta_activo')
     .in('categoria', [4, 5])
     .in('tema', competenciasABuscar);
 
@@ -426,24 +476,43 @@ async function rutaMedia(req, res) {
   // se miraba goles_local_oficial, así que TODO partido Cat.5 quedaba
   // marcado "sin resultado" para siempre, ya estuviera resuelto o no. Ahora
   // cuenta como resuelto si tiene CUALQUIERA de los dos.
+  //
+  // DOS FUENTES POR PARTIDO (a pedido, Argentina: AFA + ESPN Fans): un
+  // partido ya no se excluye entero solo porque UNA de sus fuentes ya tiene
+  // video — se calcula, por partido, la lista de fuentes que TODAVÍA le
+  // faltan (`fuentesPendientes`, campo `d[fuente.campo]` vacío, y para el
+  // campo principal `media_video_url` que además no esté corregido a mano)
+  // y solo se excluye si esa lista queda vacía (las dos fuentes que
+  // aplican, o la única, ya están completas).
   const excluidos = [];
-  const partidos = (candidatosBrutos || []).filter((d) => {
-    const motivos = [];
-    if (!d.esta_activo) motivos.push('esta_activo = false');
-    if (d.media_video_corregido) motivos.push('media_video_corregido = true (ya lo corrigió un admin a mano)');
-    if (d.media_video_url) motivos.push('ya tiene media_video_url cargado');
-    if (d.goles_local_oficial == null && !d.resultado_oficial) {
-      motivos.push('sin resultado oficial cargado (ni goles_local_oficial ni resultado_oficial, ver /resolver)');
-    }
-    if (d.fecha_expiracion && new Date(d.fecha_expiracion).getTime() < limite.getTime()) {
-      motivos.push(`fuera de la ventana de ${DIAS_VENTANA_MEDIA} días (DIAS_VENTANA_MEDIA)`);
-    }
-    if (motivos.length > 0) {
-      if (modoDiagnostico) excluidos.push({ id: d.id, partido: `${d.equipo_local} vs ${d.equipo_visitante}`, motivos });
-      return false;
-    }
-    return true;
-  });
+  const partidos = (candidatosBrutos || [])
+    .map((d) => {
+      const fuentesDeEsteTema = FUENTES_POR_COMPETENCIA[d.tema] || [];
+      const fuentesPendientes = fuentesDeEsteTema.filter((f) => {
+        if (d[f.campo]) return false; // esta fuente ya tiene su video guardado
+        if (f.campo === 'media_video_url' && d.media_video_corregido) return false; // admin lo corrigió a mano, no tocar
+        return true;
+      });
+      return { ...d, fuentesPendientes };
+    })
+    .filter((d) => {
+      const motivos = [];
+      if (!d.esta_activo) motivos.push('esta_activo = false');
+      if (d.fuentesPendientes.length === 0) {
+        motivos.push('todas sus fuentes de video ya están completas (o corregidas a mano)');
+      }
+      if (d.goles_local_oficial == null && !d.resultado_oficial) {
+        motivos.push('sin resultado oficial cargado (ni goles_local_oficial ni resultado_oficial, ver /resolver)');
+      }
+      if (d.fecha_expiracion && new Date(d.fecha_expiracion).getTime() < limite.getTime()) {
+        motivos.push(`fuera de la ventana de ${DIAS_VENTANA_MEDIA} días (DIAS_VENTANA_MEDIA)`);
+      }
+      if (motivos.length > 0) {
+        if (modoDiagnostico) excluidos.push({ id: d.id, partido: `${d.equipo_local} vs ${d.equipo_visitante}`, motivos });
+        return false;
+      }
+      return true;
+    });
 
   // detalle (a pedido, diagnóstico): para cada partido revisado, qué títulos
   // encontró en el canal aunque no hayan matcheado — así se distingue "el
@@ -455,63 +524,72 @@ async function rutaMedia(req, res) {
 
   // Uploads del canal, UNA sola vez por fuente (no por partido): varios
   // partidos comparten la misma fuente, y esta lista no cambia entre uno y
-  // otro dentro de la misma corrida del cron.
+  // otro dentro de la misma corrida del cron. Se resuelve el channelId ANTES
+  // de cachear (ver resolverChannelId — solo hace falta para ESPN Fans, que
+  // no tiene channelId fijo a mano) para no repetir esa llamada tampoco.
   const uploadsPorFuente = {};
   const obtenerUploads = async (fuente) => {
-    if (!uploadsPorFuente[fuente.channelId]) {
-      uploadsPorFuente[fuente.channelId] = await traerUploadsRecientes(fuente.channelId);
+    const channelId = await resolverChannelId(fuente);
+    if (!channelId) return { videos: [], errorApi: `No se pudo resolver el channelId de ${fuente.nombre}` };
+    if (!uploadsPorFuente[channelId]) {
+      uploadsPorFuente[channelId] = await traerUploadsRecientes(channelId);
     }
-    return uploadsPorFuente[fuente.channelId];
+    return uploadsPorFuente[channelId];
   };
 
   for (const partido of partidos || []) {
-    try {
-      const fuente = FUENTE_POR_COMPETENCIA[partido.tema];
-      if (!fuente) continue; // no debería pasar, el select ya filtró por TODAS_LAS_COMPETENCIAS_CON_FUENTE
-      const { videos, errorApi: errorUploads } = await obtenerUploads(fuente);
-      if (errorUploads) {
+    // Un partido de Argentina ahora puede tener DOS fuentes pendientes (AFA
+    // + ESPN Fans) — se buscan las dos, cada una guarda en su propio campo.
+    // Un error o "no encontrado" en una fuente no frena la búsqueda de la
+    // otra (por eso este bucle interno vive DENTRO del try/catch de más
+    // abajo, uno por fuente en vez de uno por partido).
+    for (const fuente of partido.fuentesPendientes) {
+      try {
+        const { videos, errorApi: errorUploads } = await obtenerUploads(fuente);
+        if (errorUploads) {
+          resultado.detalle.push({
+            id: partido.id,
+            partido: `${partido.equipo_local} vs ${partido.equipo_visitante}`,
+            fuente: fuente.nombre,
+            encontrado: false,
+            errorApi: errorUploads,
+          });
+          continue;
+        }
+        // Marcador oficial (solo si es Cat.4 y ya está cargado) — se usa para
+        // verificar el video encontrado, ver nota de PALABRAS_EXCLUYEN_VIDEO /
+        // marcadorCoincide en buscarVideoResumenEnLista.
+        const golesOficiales = (partido.goles_local_oficial != null && partido.goles_visitante_oficial != null)
+          ? [partido.goles_local_oficial, partido.goles_visitante_oficial]
+          : null;
+        const { videoId, candidatos } = buscarVideoResumenEnLista(partido.equipo_local, partido.equipo_visitante, partido.fecha_expiracion, videos, golesOficiales);
         resultado.detalle.push({
           id: partido.id,
           partido: `${partido.equipo_local} vs ${partido.equipo_visitante}`,
           fuente: fuente.nombre,
-          encontrado: false,
-          errorApi: errorUploads,
+          encontrado: !!videoId,
+          // Recortado a los primeros 8 (a pedido: la respuesta se volvió
+          // "demasiado grande" para cron-job.org con la lista completa de
+          // hasta 150 títulos por partido) — alcanza para reconocer el patrón
+          // sin video, sin volver la respuesta gigante. Lista completa solo
+          // con ?diagnostico=1.
+          ...(modoDiagnostico ? { candidatos } : { candidatosCount: candidatos.length, candidatos: candidatos.slice(0, 8) }),
         });
-        continue;
-      }
-      // Marcador oficial (solo si es Cat.4 y ya está cargado) — se usa para
-      // verificar el video encontrado, ver nota de PALABRAS_EXCLUYEN_VIDEO /
-      // marcadorCoincide en buscarVideoResumenEnLista.
-      const golesOficiales = (partido.goles_local_oficial != null && partido.goles_visitante_oficial != null)
-        ? [partido.goles_local_oficial, partido.goles_visitante_oficial]
-        : null;
-      const { videoId, candidatos } = buscarVideoResumenEnLista(partido.equipo_local, partido.equipo_visitante, partido.fecha_expiracion, videos, golesOficiales);
-      resultado.detalle.push({
-        id: partido.id,
-        partido: `${partido.equipo_local} vs ${partido.equipo_visitante}`,
-        fuente: fuente.nombre,
-        encontrado: !!videoId,
-        // Recortado a los primeros 8 (a pedido: la respuesta se volvió
-        // "demasiado grande" para cron-job.org con la lista completa de
-        // hasta 150 títulos por partido) — alcanza para reconocer el patrón
-        // sin video, sin volver la respuesta gigante. Lista completa solo
-        // con ?diagnostico=1.
-        ...(modoDiagnostico ? { candidatos } : { candidatosCount: candidatos.length, candidatos: candidatos.slice(0, 8) }),
-      });
-      if (videoId) {
-        const { error: errUpdate } = await supabase
-          .from('desafios_mvp')
-          .update({ media_video_url: `https://www.youtube.com/watch?v=${videoId}` })
-          .eq('id', partido.id);
-        if (errUpdate) {
-          resultado.errores.push({ id: partido.id, error: errUpdate.message });
-        } else {
-          resultado.encontrados++;
-          console.log(`[/media] Partido ${partido.id} (${partido.pregunta}) -> video ${videoId}`);
+        if (videoId) {
+          const { error: errUpdate } = await supabase
+            .from('desafios_mvp')
+            .update({ [fuente.campo]: `https://www.youtube.com/watch?v=${videoId}` })
+            .eq('id', partido.id);
+          if (errUpdate) {
+            resultado.errores.push({ id: partido.id, fuente: fuente.nombre, error: errUpdate.message });
+          } else {
+            resultado.encontrados++;
+            console.log(`[/media] Partido ${partido.id} (${partido.pregunta}) -> video ${videoId} (${fuente.nombre})`);
+          }
         }
+      } catch (e) {
+        resultado.errores.push({ id: partido.id, fuente: fuente.nombre, error: e.message });
       }
-    } catch (e) {
-      resultado.errores.push({ id: partido.id, error: e.message });
     }
   }
 
