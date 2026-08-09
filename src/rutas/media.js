@@ -533,7 +533,7 @@ async function rutaMedia(req, res) {
   // de adivinar.
   const { data: candidatosBrutos, error } = await supabase
     .from('desafios_mvp')
-    .select('id, pregunta, tema, equipo_local, equipo_visitante, fecha_expiracion, goles_local_oficial, goles_visitante_oficial, resultado_oficial, media_video_url, media_video_url_espn, media_video_corregido, esta_activo')
+    .select('id, pregunta, tema, equipo_local, equipo_visitante, fecha_expiracion, goles_local_oficial, goles_visitante_oficial, resultado_oficial, media_video_url, media_video_url_espn, media_video_corregido, media_video_espn_corregido, esta_activo')
     .in('categoria', [4, 5])
     .in('tema', competenciasABuscar);
 
@@ -565,7 +565,13 @@ async function rutaMedia(req, res) {
       const fuentesDeEsteTema = FUENTES_POR_COMPETENCIA[d.tema] || [];
       const fuentesPendientes = fuentesDeEsteTema.filter((f) => {
         if (d[f.campo]) return false; // esta fuente ya tiene su video guardado
-        if (f.campo === 'media_video_url' && d.media_video_corregido) return false; // admin lo corrigió a mano, no tocar
+        // admin lo corrigió a mano (ver ModuloMediaPartido) — no tocar. Cada
+        // fuente tiene su propia bandera de corrección, así corregir la AFA
+        // no bloquea la búsqueda automática de ESPN Fans y viceversa (a
+        // pedido: "agrega un botón admin en media para corregir video de
+        // espn fans").
+        if (f.campo === 'media_video_url' && d.media_video_corregido) return false;
+        if (f.campo === 'media_video_url_espn' && d.media_video_espn_corregido) return false;
         return true;
       });
       return { ...d, fuentesPendientes };
@@ -594,8 +600,22 @@ async function rutaMedia(req, res) {
   // canal todavía no subió nada" (candidatos: []) de "subió algo pero el
   // nombre no calzó" (candidatos con títulos, encontrado: false). Recortado
   // a los primeros 8 títulos en modo diagnóstico (igual alcanza para
-  // reconocer el patrón) y directamente ausente fuera de modo diagnóstico.
-  const resultado = { revisados: (partidos || []).length, encontrados: 0, errores: [], detalle: [], ...(modoDiagnostico ? { excluidos } : {}) };
+  // reconocer el patrón).
+  //
+  // BUG encontrado (a pedido: "sigue sin correr, sale demasiado grande" —
+  // TODAVÍA fallaba después de sacarle los títulos): el `detalle` en sí
+  // (un objeto por partido x por fuente, y Argentina ahora tiene DOS
+  // fuentes por partido) seguía siendo demasiado pesado para cron-job.org
+  // incluso solo con candidatosCount, una vez que hay muchos partidos en la
+  // ventana de DIAS_VENTANA_MEDIA. La respuesta liviana por default (lo que
+  // de verdad necesita el cron: cuántos se revisaron/encontraron) ahora NO
+  // incluye `detalle` para nada — solo se arma con ?diagnostico=1.
+  const resultado = {
+    revisados: (partidos || []).length,
+    encontrados: 0,
+    errores: [],
+    ...(modoDiagnostico ? { detalle: [], excluidos } : {}),
+  };
 
   // Uploads del canal, UNA sola vez por fuente (no por partido): varios
   // partidos comparten la misma fuente, y esta lista no cambia entre uno y
@@ -622,13 +642,15 @@ async function rutaMedia(req, res) {
       try {
         const { videos, errorApi: errorUploads } = await obtenerUploads(fuente);
         if (errorUploads) {
-          resultado.detalle.push({
-            id: partido.id,
-            partido: `${partido.equipo_local} vs ${partido.equipo_visitante}`,
-            fuente: fuente.nombre,
-            encontrado: false,
-            errorApi: errorUploads,
-          });
+          if (modoDiagnostico) {
+            resultado.detalle.push({
+              id: partido.id,
+              partido: `${partido.equipo_local} vs ${partido.equipo_visitante}`,
+              fuente: fuente.nombre,
+              encontrado: false,
+              errorApi: errorUploads,
+            });
+          }
           continue;
         }
         // Marcador oficial (solo si es Cat.4 y ya está cargado) — se usa para
@@ -641,21 +663,20 @@ async function rutaMedia(req, res) {
           margenPublicacionMs: fuente.margenPublicacionMs,
           requiereMarcadorResumen: fuente.requiereMarcadorResumen,
         });
-        resultado.detalle.push({
-          id: partido.id,
-          partido: `${partido.equipo_local} vs ${partido.equipo_visitante}`,
-          fuente: fuente.nombre,
-          encontrado: !!videoId,
-          // SIN candidatos fuera de diagnóstico (a pedido, bug reportado:
-          // "salida demasiado grande", cron-job.org corta la respuesta):
-          // antes acá quedaban hasta 8 TÍTULOS completos por fuente — con
-          // Argentina ahora teniendo DOS fuentes por partido (AFA + ESPN
-          // Fans), esa lista se duplicó y volvió a pasarse del límite. Fuera
-          // de diagnóstico solo queda el número (candidatosCount), sin
-          // texto — el detalle completo de títulos sigue disponible con
-          // ?diagnostico=1 para cuando de verdad hace falta investigar.
-          ...(modoDiagnostico ? { candidatos } : { candidatosCount: candidatos.length }),
-        });
+        // SIN detalle fuera de diagnóstico (a pedido, bug reportado dos
+        // veces: "salida demasiado grande", cron-job.org corta la
+        // respuesta) — ver comentario en la definición de `resultado` más
+        // arriba. El detalle completo (uno por partido x fuente, con
+        // títulos) sigue disponible con ?diagnostico=1.
+        if (modoDiagnostico) {
+          resultado.detalle.push({
+            id: partido.id,
+            partido: `${partido.equipo_local} vs ${partido.equipo_visitante}`,
+            fuente: fuente.nombre,
+            encontrado: !!videoId,
+            candidatos,
+          });
+        }
         if (videoId) {
           const { error: errUpdate } = await supabase
             .from('desafios_mvp')
