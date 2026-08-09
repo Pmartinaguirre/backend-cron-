@@ -95,6 +95,57 @@ function construirSetGolesAnulados(eventos) {
   return set;
 }
 
+// TARJETA ROJA A JUGADOR DE CANCHA (a pedido: "cuando le sacan una roja a un
+// jugador de campo... la api tb marca las rojas a la banca del equipo pero
+// esa no las consideres"): API-Football no distingue "roja a un jugador en
+// cancha" de "roja al banco de suplentes/cuerpo técnico" con un campo propio
+// — hay que deducirlo cruzando el evento de tarjeta con la alineación
+// (lineups, que ya viene en esta misma llamada a /fixtures?id=).
+//
+// Se arma, por equipo, el set de ids de jugadores que están EN CANCHA en
+// cada momento: arranca con el 11 titular (lineups[].startXI) y se va
+// actualizando con cada cambio ("subst": `player` es el que ENTRA, `assist`
+// el que SALE — mismo criterio que usa obtenerDetalleFixture más abajo). Un
+// evento "Card" con detail "Red Card" o "Second Yellow card" (roja por doble
+// amarilla) cuenta como roja de cancha solo si, en ESE momento, el jugador
+// está en el set — si no está (suplente que nunca entró, cuerpo técnico sin
+// ficha de jugador, etc.) se descarta como roja a la banca.
+//
+// Se recorren los eventos en orden cronológico (elapsed+extra) para que un
+// cambio anterior a la roja ya haya movido al jugador correspondiente.
+function huboRojaDeCancha(fx) {
+  const idLocal = fx.teams?.home?.id;
+  const enCanchaLocal = new Set();
+  const enCanchaVisita = new Set();
+  (fx.lineups || []).forEach((l) => {
+    const set = l.team?.id === idLocal ? enCanchaLocal : enCanchaVisita;
+    (l.startXI || []).forEach((x) => { if (x.player?.id != null) set.add(x.player.id); });
+  });
+  const eventosOrdenados = [...(fx.events || [])].sort((a, b) => {
+    const ea = (a.time?.elapsed ?? 0) + (a.time?.extra ?? 0) / 100;
+    const eb = (b.time?.elapsed ?? 0) + (b.time?.extra ?? 0) / 100;
+    return ea - eb;
+  });
+  let rojaLocal = false;
+  let rojaVisita = false;
+  eventosOrdenados.forEach((ev) => {
+    const esDelLocal = ev.team?.id === idLocal;
+    const set = esDelLocal ? enCanchaLocal : enCanchaVisita;
+    if (ev.type === 'subst') {
+      if (ev.assist?.id != null) set.delete(ev.assist.id); // sale
+      if (ev.player?.id != null) set.add(ev.player.id); // entra
+      return;
+    }
+    if (ev.type === 'Card' && (ev.detail === 'Red Card' || ev.detail === 'Second Yellow card')) {
+      const jugadorId = ev.player?.id;
+      if (jugadorId != null && set.has(jugadorId)) {
+        if (esDelLocal) rojaLocal = true; else rojaVisita = true;
+      }
+    }
+  });
+  return { rojaLocal, rojaVisita };
+}
+
 function extraerEstadisticas(fx, idLocal) {
   const statsLocal = (fx.statistics || []).find((s) => s.team?.id === idLocal)?.statistics || [];
   const statsVisita = (fx.statistics || []).find((s) => s.team?.id !== idLocal)?.statistics || [];
@@ -231,6 +282,11 @@ async function obtenerEstadoFixture(fixtureId) {
   // "quién domina" sin depender de un dato de momentum que la API no tiene.
   const estadisticas = extraerEstadisticas(fixture, idEquipoLocal);
 
+  // Roja a jugador de cancha (a pedido, mini tarjeta): ver huboRojaDeCancha
+  // más arriba. Se calcula acá porque esta misma llamada ya trae lineups +
+  // events juntos — no hace falta pegarle a otro endpoint aparte.
+  const { rojaLocal, rojaVisita } = huboRojaDeCancha(fixture);
+
   return {
     estado,
     minuto,
@@ -248,6 +304,8 @@ async function obtenerEstadoFixture(fixtureId) {
     estadioVenueId,
     arbitro,
     arbitroPais,
+    rojaLocal,
+    rojaVisita,
   };
 }
 
