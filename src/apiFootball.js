@@ -60,6 +60,41 @@ function esEventoDeTandaPenales(ev) {
   return ev.type === 'Goal' && Number.isFinite(min) && min > MINUTO_MAX_TIEMPO_REAL;
 }
 
+// GOL ANULADO POR VAR (a pedido, bug reportado: "el sistema edita el
+// marcador pero deja el gol impreso en la tarjeta, en el resumen y en el
+// momentum, lo tiene que eliminar de los tres"): cuando el VAR anula un gol,
+// API-Football NO borra el evento original "Goal" — lo deja tal cual estaba
+// y agrega, APARTE, un evento type: "Var" con detail tipo "Goal Cancelled -
+// Offside" al MISMO minuto y equipo. Sin cruzar los dos, el gol anulado
+// seguía contando como gol real en todos lados (goleadores de la tarjeta,
+// resumen del partido y el gráfico de momentum, que se arma a partir del
+// mismo resumen). Acá se arma el set de "goles anulados" (clave equipo+
+// minuto) para poder EXCLUIR el evento "Goal" original en los tres lugares
+// que lo usan — el evento "Var" en sí se mantiene y sigue mostrando el
+// aviso de gol anulado.
+//
+// GOL CONFIRMADO POR VAR (a pedido: "revisa si la API da la info cuando hay
+// VAR... gol validado por el VAR"): mismo mecanismo, pero cuando la revisión
+// CONFIRMA el gol, API-Football manda el evento "Var" con detail tipo "Goal
+// confirmed" — acá se distingue de un gol anulado para que el frontend
+// pueda pintar "Gol validado por el VAR" en vez de tratarlo como una
+// revisión genérica.
+function claveEventoGolVar(ev) {
+  return `${ev.team?.id}-${ev.time?.elapsed}`;
+}
+function esVarSobreGol(ev, patronDetalle) {
+  return ev.type === 'Var' && /goal/i.test(ev.detail || '') && patronDetalle.test(ev.detail || '');
+}
+const PATRON_GOL_ANULADO = /(disallow|cancel|anulad)/i;
+const PATRON_GOL_CONFIRMADO = /(confirm|valid)/i;
+function construirSetGolesAnulados(eventos) {
+  const set = new Set();
+  (eventos || [])
+    .filter((ev) => esVarSobreGol(ev, PATRON_GOL_ANULADO))
+    .forEach((ev) => set.add(claveEventoGolVar(ev)));
+  return set;
+}
+
 function extraerEstadisticas(fx, idLocal) {
   const statsLocal = (fx.statistics || []).find((s) => s.team?.id === idLocal)?.statistics || [];
   const statsVisita = (fx.statistics || []).find((s) => s.team?.id !== idLocal)?.statistics || [];
@@ -82,15 +117,31 @@ async function obtenerEstadoFixture(fixtureId) {
   const estado = fixture.fixture?.status?.short || null; // NS, 1H, HT, 2H, FT, PST, etc.
   const minuto = fixture.fixture?.status?.elapsed ?? null;
   // Estadio + árbitro (a pedido, "Información del partido" en la app): la
-  // misma llamada a /fixtures?id= ya trae estos dos datos, así que no hace
-  // falta pegarle a otro endpoint aparte — se reaprovecha acá y /cuotas los
-  // guarda junto con las cuotas (ver rutas/cuotas.js). El árbitro suele
-  // confirmarse recién unos días antes del partido (a veces sigue null
-  // hasta último momento, incluso con el estadio ya cargado), así que puede
-  // llegar en null por un tiempo — no es un error, es que la propia
-  // API-Football todavía no lo tiene asignado.
-  const estadio = [fixture.fixture?.venue?.name, fixture.fixture?.venue?.city].filter(Boolean).join(' — ') || null;
-  const arbitro = fixture.fixture?.referee || null;
+  // misma llamada a /fixtures?id= ya trae estos datos, así que no hace
+  // falta pegarle a otro endpoint aparte para nombre/ciudad — se reaprovecha
+  // acá y /cuotas los guarda junto con las cuotas (ver rutas/cuotas.js). El
+  // árbitro suele confirmarse recién unos días antes del partido (a veces
+  // sigue null hasta último momento, incluso con el estadio ya cargado), así
+  // que puede llegar en null por un tiempo — no es un error, es que la
+  // propia API-Football todavía no lo tiene asignado.
+  //
+  // Nombre/ciudad SEPARADOS (antes venían combinados en un solo string "Name
+  // — City") para poder armar el formato pedido "Nombre estadio, ciudad,
+  // país" en el frontend. venueId se guarda para poder pedir capacidad/
+  // césped/año de fundación al endpoint /venues (ver obtenerDatosVenue más
+  // abajo) — /fixtures no trae esos tres datos.
+  const estadioNombre = fixture.fixture?.venue?.name || null;
+  const estadioCiudad = fixture.fixture?.venue?.city || null;
+  const estadioVenueId = fixture.fixture?.venue?.id || null;
+  // Árbitro: API-Football en varias ligas manda "Nombre Apellido, País" en
+  // un solo string (no hay un campo de nacionalidad separado) — se separa
+  // acá por la coma para poder mostrar la bandera del país aparte en el
+  // frontend. Si no hay coma (algunas ligas mandan solo el nombre), queda
+  // arbitroPais en null y el frontend simplemente no muestra bandera.
+  const arbitroCrudo = fixture.fixture?.referee || null;
+  const [arbitroNombreRaw, arbitroPaisRaw] = arbitroCrudo ? arbitroCrudo.split(',').map((s) => s.trim()) : [null, null];
+  const arbitro = arbitroNombreRaw || null;
+  const arbitroPais = arbitroPaisRaw || null;
   // Tiempo de descuento: API-Football lo manda aparte de "elapsed" (en un
   // 90+5, elapsed=90 y extra=5). Se guarda separado para poder mostrar
   // "90'+5'" en vez de sumarlos y perder la distinción.
@@ -135,10 +186,15 @@ async function obtenerEstadoFixture(fixtureId) {
   // ordenado en la línea de tiempo.
   const idEquipoLocal = fixture.teams?.home?.id;
   const eventos = fixture.events || [];
+  const golesAnulados = construirSetGolesAnulados(eventos);
   const goleadoresLocal = [];
   const goleadoresVisita = [];
   eventos
-    .filter((ev) => ev.type === 'Goal' && ev.detail !== 'Missed Penalty' && !esEventoDeTandaPenales(ev))
+    .filter((ev) => ev.type === 'Goal' && ev.detail !== 'Missed Penalty' && !esEventoDeTandaPenales(ev)
+      // Gol anulado por VAR (a pedido): se saca acá para que no quede
+      // impreso en la tarjeta de partido aunque el marcador ya esté
+      // corregido — ver construirSetGolesAnulados más arriba.
+      && !golesAnulados.has(claveEventoGolVar(ev)))
     .forEach((ev) => {
       const esAutogol = ev.detail === 'Own Goal';
       const esPenal = ev.detail === 'Penalty';
@@ -187,8 +243,32 @@ async function obtenerEstadoFixture(fixtureId) {
     estadisticas,
     penalesLocal,
     penalesVisita,
-    estadio,
+    estadioNombre,
+    estadioCiudad,
+    estadioVenueId,
     arbitro,
+    arbitroPais,
+  };
+}
+
+// ---------- Datos del estadio (capacidad/césped/año, usado por /cuotas ----------
+// junto con estadioVenueId de obtenerEstadoFixture) ----------
+// API-Football separa esto del fixture: /venues?id= trae name/city/country/
+// capacity/surface/image/address — acá solo se usan capacity, surface,
+// country (el "año de fundación" NO lo entrega este endpoint pese a que a
+// veces se pide; si en el futuro aparece en la respuesta se puede sumar,
+// por ahora queda null). Se llama solo cuando falta alguno de estos datos
+// (ver cuotas.js), no en cada corrida, para no gastar cuota de más.
+async function obtenerDatosVenue(venueId) {
+  if (!venueId) return null;
+  const resp = await fetch(`${BASE}/venues?id=${venueId}`, { headers });
+  const data = await resp.json();
+  const venue = data?.response?.[0];
+  if (!venue) return null;
+  return {
+    pais: venue.country || null,
+    capacidad: venue.capacity ?? null,
+    cesped: venue.surface || null,
   };
 }
 
@@ -291,11 +371,18 @@ async function obtenerDetalleFixture(fixtureId) {
   // Eventos ordenados cronológicamente, ya traducidos a algo que la app
   // pueda pintar directo (tipo + texto), en vez del vocabulario crudo de la
   // API ("Goal"/"subst"/"Card"/"Var").
+  const golesAnuladosDetalle = construirSetGolesAnulados(fx.events || []);
   const eventos = (fx.events || [])
     // Tanda de penales (a pedido): estos pateos NO van en la línea de tiempo
     // del partido — "acá solo van goles en tiempo de juego con o sin
     // alargue". Se sacan de acá y se arman aparte más abajo (tandaPenales).
     .filter((ev) => !esEventoDeTandaPenales(ev))
+    // Gol anulado por VAR (a pedido, bug reportado: "queda el gol impreso
+    // en el resumen del partido, lo tiene que eliminar"): se saca el evento
+    // "Goal" original — el evento "Var" que lo anuló se mantiene y es el
+    // que el frontend expande en "Revisando gol por el VAR" + "Gol anulado
+    // por el VAR" (ver ResumenEventos en sementomvp.jsx).
+    .filter((ev) => !(ev.type === 'Goal' && golesAnuladosDetalle.has(claveEventoGolVar(ev))))
     .map((ev) => {
       const tipo = (ev.type || '').toLowerCase();
       const detalle = ev.detail || '';
@@ -303,11 +390,19 @@ async function obtenerDetalleFixture(fixtureId) {
       if (tipo === 'goal') clase = detalle === 'Missed Penalty' ? 'penal_errado' : detalle === 'Own Goal' ? 'autogol' : detalle === 'Penalty' ? 'penal' : 'gol';
       else if (tipo === 'card') clase = detalle === 'Red Card' ? 'roja' : 'amarilla';
       else if (tipo === 'subst') clase = 'cambio';
-      // VAR (a pedido): cuando la revisión termina en un gol anulado
-      // (detail tipo "Goal Disallowed - Offside", "Goal cancelled", etc.),
-      // se marca con su propia clase para que el frontend pinte DOS líneas
-      // ("Revisión de gol" + "Gol anulado") en vez de la genérica "var".
-      else if (tipo === 'var') clase = /goal/i.test(detalle) && /(disallow|cancel|anulad)/i.test(detalle) ? 'gol_anulado' : 'var';
+      // VAR (a pedido): cuando la revisión es sobre un gol, se distingue si
+      // terminó ANULADO ("Goal Disallowed - Offside", "Goal cancelled",
+      // etc.) o CONFIRMADO ("Goal confirmed") — cada uno con su propia
+      // clase para que el frontend pinte las dos líneas correspondientes
+      // ("Revisando gol por el VAR" + "Gol anulado/validado por el VAR")
+      // en vez de la genérica "Revisión". Cualquier otra revisión VAR (de
+      // un penal, una tarjeta) que no sea sobre un gol queda como 'var'
+      // genérica, tal como antes.
+      else if (tipo === 'var') {
+        clase = esVarSobreGol(ev, PATRON_GOL_ANULADO) ? 'gol_anulado'
+          : esVarSobreGol(ev, PATRON_GOL_CONFIRMADO) ? 'gol_confirmado'
+          : 'var';
+      }
       return {
         minuto: ev.time?.elapsed != null ? ev.time.elapsed + (ev.time?.extra || 0) : null,
         clase,
@@ -605,4 +700,4 @@ async function obtenerFichaClub(teamId) {
   return ficha;
 }
 
-module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture, obtenerFichaJugador, obtenerFichaClub, obtenerPerfilBasicoJugador };
+module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture, obtenerFichaJugador, obtenerFichaClub, obtenerPerfilBasicoJugador };
