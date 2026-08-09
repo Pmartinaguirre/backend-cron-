@@ -11,13 +11,30 @@ const { filtrarPendientes, partidosAbandonados } = require('../partidosPendiente
 async function rutaVivo(req, res) {
   const ahoraISO = new Date().toISOString();
 
-  const { data: partidos, error } = await supabase
-    .from('desafios_mvp')
-    .select('id, categoria, fixture_id_api, resultado_oficial, goles_local_oficial, fecha_expiracion, estado_partido')
-    .in('categoria', [4, 5])
-    .eq('esta_activo', true)
-    .not('fixture_id_api', 'is', null)
-    .lte('fecha_expiracion', ahoraISO);
+  // ?id=<desafio_id> (a pedido, backfill puntual): reprocesa UN partido
+  // puntual sin importar su estado ni su fecha — se salta el filtro de
+  // "pendientes" de más abajo. Existe porque /vivo NUNCA vuelve a mirar un
+  // partido que ya llegó a FT (ver filtrarPendientes/ESTADOS_TERMINADOS en
+  // partidosPendientes.js — es decisión a propósito para no gastar cuota en
+  // partidos ya resueltos), así que cualquier campo NUEVO que se agregue acá
+  // (como roja_local/roja_visita) nunca se completa solo para partidos que
+  // ya habían terminado ANTES de que ese campo existiera. Con esto se puede
+  // forzar la actualización de un partido puntual a mano, para probar o
+  // completar datos viejos, sin tener que esperar un partido en vivo nuevo.
+  const idForzado = req.query?.id || null;
+
+  const { data: partidos, error } = idForzado
+    ? await supabase
+        .from('desafios_mvp')
+        .select('id, categoria, fixture_id_api, resultado_oficial, goles_local_oficial, fecha_expiracion, estado_partido')
+        .eq('id', idForzado)
+    : await supabase
+        .from('desafios_mvp')
+        .select('id, categoria, fixture_id_api, resultado_oficial, goles_local_oficial, fecha_expiracion, estado_partido')
+        .in('categoria', [4, 5])
+        .eq('esta_activo', true)
+        .not('fixture_id_api', 'is', null)
+        .lte('fecha_expiracion', ahoraISO);
 
   if (error) {
     console.error('[/vivo] Error leyendo desafios_mvp:', error);
@@ -27,8 +44,9 @@ async function rutaVivo(req, res) {
   // El criterio de "a quién todavía vale la pena preguntarle" vive en
   // src/partidosPendientes.js, compartido con /resolver — ver ahí el detalle
   // de por qué un partido postergado se quedaba consultando para siempre.
-  const pendientes = filtrarPendientes(partidos);
-  const abandonados = partidosAbandonados(partidos);
+  // Con ?id= se salta ESTE filtro a propósito (ver comentario más arriba).
+  const pendientes = idForzado ? (partidos || []) : filtrarPendientes(partidos);
+  const abandonados = idForzado ? [] : partidosAbandonados(partidos);
 
   const resultado = {
     revisados: pendientes.length,
