@@ -383,12 +383,24 @@ async function obtenerFixturesDeLiga(leagueId, season) {
   };
 }
 
-// ---------- Equipos de una liga (usado por /equipos, para el selector Tier A del Admin) ----------
+// ---------- Equipos de una liga (usado por /equipos, para el selector Tier A
+// del Admin, "Equipos que sigue el grupo" de MisGrupos.jsx, y Equipos
+// favoritos de Perfil.jsx) ----------
+// Devuelve OBJETOS {nombre, logo, pais} (antes solo el nombre) — a pedido:
+// "falto a agregar a los equipos y competencias sus logos, y abajo del
+// nombre escribe... el país donde juega". API-Football ya trae logo y país
+// gratis en el mismo /teams, así que no hace falta una llamada aparte.
 async function obtenerEquiposDeLiga(leagueId, season) {
   const resp = await fetch(`${BASE}/teams?league=${leagueId}&season=${season}`, { headers });
   const data = await resp.json();
-  const equipos = (data?.response || []).map((r) => r.team?.name).filter(Boolean);
-  return equipos.sort((a, b) => a.localeCompare(b, 'es'));
+  const equipos = (data?.response || [])
+    .map((r) => ({
+      nombre: r.team?.name || null,
+      logo: r.team?.logo || null,
+      pais: r.team?.country || null,
+    }))
+    .filter((e) => e.nombre);
+  return equipos.sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
 }
 
 // ---------- Tabla de posiciones de una liga (usado por /posiciones-liga) ----------
