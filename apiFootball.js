@@ -39,6 +39,123 @@ async function obtenerCuotas(fixtureId) {
   return null; // todavía no hay cuotas cargadas para este fixture
 }
 
+// Estadísticas (tiros, posesión, corners...) de un fixture ya traído de
+// /fixtures?id= — factorizado acá porque tanto obtenerDetalleFixture como
+// obtenerEstadoFixture pegan a ESE MISMO endpoint (que ya trae statistics
+// adentro de la respuesta) y hasta ahora solo el primero lo aprovechaba.
+// Vienen como pares {type, value} por equipo; se cruzan en una sola lista
+// para que quien la use pinte "local | concepto | visita" sin emparejar.
+// Tanda de penales (a pedido): API-Football manda los penales del alargue
+// como eventos "Goal" normales, con el `time.elapsed` siguiendo la cuenta
+// donde quedó el partido (121, 122, 123...) en vez de un dato propio de
+// "kick de la tanda". Como el partido real (90' + alargue) nunca pasa de
+// 120', cualquier evento con elapsed > 120 es un pateo de la definición, no
+// un gol de tiempo de juego — así se separan de los goles reales tanto en
+// la lista de goleadores (obtenerEstadoFixture) como en la línea de tiempo
+// del resumen (obtenerDetalleFixture), y de paso se arma la lista propia de
+// "quién pateó y si convirtió" para mostrar la tanda aparte.
+const MINUTO_MAX_TIEMPO_REAL = 120;
+function esEventoDeTandaPenales(ev) {
+  const min = ev.time?.elapsed;
+  return ev.type === 'Goal' && Number.isFinite(min) && min > MINUTO_MAX_TIEMPO_REAL;
+}
+
+// GOL ANULADO POR VAR (a pedido, bug reportado: "el sistema edita el
+// marcador pero deja el gol impreso en la tarjeta, en el resumen y en el
+// momentum, lo tiene que eliminar de los tres"): cuando el VAR anula un gol,
+// API-Football NO borra el evento original "Goal" — lo deja tal cual estaba
+// y agrega, APARTE, un evento type: "Var" con detail tipo "Goal Cancelled -
+// Offside" al MISMO minuto y equipo. Sin cruzar los dos, el gol anulado
+// seguía contando como gol real en todos lados (goleadores de la tarjeta,
+// resumen del partido y el gráfico de momentum, que se arma a partir del
+// mismo resumen). Acá se arma el set de "goles anulados" (clave equipo+
+// minuto) para poder EXCLUIR el evento "Goal" original en los tres lugares
+// que lo usan — el evento "Var" en sí se mantiene y sigue mostrando el
+// aviso de gol anulado.
+//
+// GOL CONFIRMADO POR VAR (a pedido: "revisa si la API da la info cuando hay
+// VAR... gol validado por el VAR"): mismo mecanismo, pero cuando la revisión
+// CONFIRMA el gol, API-Football manda el evento "Var" con detail tipo "Goal
+// confirmed" — acá se distingue de un gol anulado para que el frontend
+// pueda pintar "Gol validado por el VAR" en vez de tratarlo como una
+// revisión genérica.
+function claveEventoGolVar(ev) {
+  return `${ev.team?.id}-${ev.time?.elapsed}`;
+}
+function esVarSobreGol(ev, patronDetalle) {
+  return ev.type === 'Var' && /goal/i.test(ev.detail || '') && patronDetalle.test(ev.detail || '');
+}
+const PATRON_GOL_ANULADO = /(disallow|cancel|anulad)/i;
+const PATRON_GOL_CONFIRMADO = /(confirm|valid)/i;
+function construirSetGolesAnulados(eventos) {
+  const set = new Set();
+  (eventos || [])
+    .filter((ev) => esVarSobreGol(ev, PATRON_GOL_ANULADO))
+    .forEach((ev) => set.add(claveEventoGolVar(ev)));
+  return set;
+}
+
+// TARJETA ROJA A JUGADOR DE CANCHA (a pedido: "cuando le sacan una roja a un
+// jugador de campo... la api tb marca las rojas a la banca del equipo pero
+// esa no las consideres"): API-Football no distingue "roja a un jugador en
+// cancha" de "roja al banco de suplentes/cuerpo técnico" con un campo propio
+// — hay que deducirlo cruzando el evento de tarjeta con la alineación
+// (lineups, que ya viene en esta misma llamada a /fixtures?id=).
+//
+// Se arma, por equipo, el set de ids de jugadores que están EN CANCHA en
+// cada momento: arranca con el 11 titular (lineups[].startXI) y se va
+// actualizando con cada cambio ("subst": `player` es el que ENTRA, `assist`
+// el que SALE — mismo criterio que usa obtenerDetalleFixture más abajo). Un
+// evento "Card" con detail "Red Card" o "Second Yellow card" (roja por doble
+// amarilla) cuenta como roja de cancha solo si, en ESE momento, el jugador
+// está en el set — si no está (suplente que nunca entró, cuerpo técnico sin
+// ficha de jugador, etc.) se descarta como roja a la banca.
+//
+// Se recorren los eventos en orden cronológico (elapsed+extra) para que un
+// cambio anterior a la roja ya haya movido al jugador correspondiente.
+function huboRojaDeCancha(fx) {
+  const idLocal = fx.teams?.home?.id;
+  const enCanchaLocal = new Set();
+  const enCanchaVisita = new Set();
+  (fx.lineups || []).forEach((l) => {
+    const set = l.team?.id === idLocal ? enCanchaLocal : enCanchaVisita;
+    (l.startXI || []).forEach((x) => { if (x.player?.id != null) set.add(x.player.id); });
+  });
+  const eventosOrdenados = [...(fx.events || [])].sort((a, b) => {
+    const ea = (a.time?.elapsed ?? 0) + (a.time?.extra ?? 0) / 100;
+    const eb = (b.time?.elapsed ?? 0) + (b.time?.extra ?? 0) / 100;
+    return ea - eb;
+  });
+  let rojaLocal = false;
+  let rojaVisita = false;
+  eventosOrdenados.forEach((ev) => {
+    const esDelLocal = ev.team?.id === idLocal;
+    const set = esDelLocal ? enCanchaLocal : enCanchaVisita;
+    if (ev.type === 'subst') {
+      if (ev.assist?.id != null) set.delete(ev.assist.id); // sale
+      if (ev.player?.id != null) set.add(ev.player.id); // entra
+      return;
+    }
+    if (ev.type === 'Card' && (ev.detail === 'Red Card' || ev.detail === 'Second Yellow card')) {
+      const jugadorId = ev.player?.id;
+      if (jugadorId != null && set.has(jugadorId)) {
+        if (esDelLocal) rojaLocal = true; else rojaVisita = true;
+      }
+    }
+  });
+  return { rojaLocal, rojaVisita };
+}
+
+function extraerEstadisticas(fx, idLocal) {
+  const statsLocal = (fx.statistics || []).find((s) => s.team?.id === idLocal)?.statistics || [];
+  const statsVisita = (fx.statistics || []).find((s) => s.team?.id !== idLocal)?.statistics || [];
+  return statsLocal.map((s) => ({
+    concepto: s.type,
+    local: s.value,
+    visita: statsVisita.find((x) => x.type === s.type)?.value ?? null,
+  }));
+}
+
 // ---------- Estado del partido + marcador + goleadores (usado por /vivo y /resolver) ----------
 // Devuelve null si la API no tiene datos para ese fixture (raro, pero por
 // las dudas no se rompe el cron completo por un solo partido con problemas).
@@ -50,6 +167,32 @@ async function obtenerEstadoFixture(fixtureId) {
 
   const estado = fixture.fixture?.status?.short || null; // NS, 1H, HT, 2H, FT, PST, etc.
   const minuto = fixture.fixture?.status?.elapsed ?? null;
+  // Estadio + árbitro (a pedido, "Información del partido" en la app): la
+  // misma llamada a /fixtures?id= ya trae estos datos, así que no hace
+  // falta pegarle a otro endpoint aparte para nombre/ciudad — se reaprovecha
+  // acá y /cuotas los guarda junto con las cuotas (ver rutas/cuotas.js). El
+  // árbitro suele confirmarse recién unos días antes del partido (a veces
+  // sigue null hasta último momento, incluso con el estadio ya cargado), así
+  // que puede llegar en null por un tiempo — no es un error, es que la
+  // propia API-Football todavía no lo tiene asignado.
+  //
+  // Nombre/ciudad SEPARADOS (antes venían combinados en un solo string "Name
+  // — City") para poder armar el formato pedido "Nombre estadio, ciudad,
+  // país" en el frontend. venueId se guarda para poder pedir capacidad/
+  // césped/año de fundación al endpoint /venues (ver obtenerDatosVenue más
+  // abajo) — /fixtures no trae esos tres datos.
+  const estadioNombre = fixture.fixture?.venue?.name || null;
+  const estadioCiudad = fixture.fixture?.venue?.city || null;
+  const estadioVenueId = fixture.fixture?.venue?.id || null;
+  // Árbitro: API-Football en varias ligas manda "Nombre Apellido, País" en
+  // un solo string (no hay un campo de nacionalidad separado) — se separa
+  // acá por la coma para poder mostrar la bandera del país aparte en el
+  // frontend. Si no hay coma (algunas ligas mandan solo el nombre), queda
+  // arbitroPais en null y el frontend simplemente no muestra bandera.
+  const arbitroCrudo = fixture.fixture?.referee || null;
+  const [arbitroNombreRaw, arbitroPaisRaw] = arbitroCrudo ? arbitroCrudo.split(',').map((s) => s.trim()) : [null, null];
+  const arbitro = arbitroNombreRaw || null;
+  const arbitroPais = arbitroPaisRaw || null;
   // Tiempo de descuento: API-Football lo manda aparte de "elapsed" (en un
   // 90+5, elapsed=90 y extra=5). Se guarda separado para poder mostrar
   // "90'+5'" en vez de sumarlos y perder la distinción.
@@ -60,6 +203,15 @@ async function obtenerEstadoFixture(fixtureId) {
   // reprogramar el partido solo (ver /vivo).
   const fechaISO = fixture.fixture?.date || null;
   const golesLocal = fixture.goals?.home ?? null;
+  // Tanda de penales (a pedido): API-Football la manda APARTE de "goals" —
+  // "goals" siempre queda con el resultado de 90'+alargue (el que define
+  // Local/Empate/Visita para los pronósticos, sin tocar por los penales).
+  // score.penalty es null hasta que arranca la definición; se guarda tal
+  // cual para mostrar la línea "Penales: X-Y" en la tarjeta y para que la
+  // barra de progreso muestre "Penales" en vez de un minuto sin sentido
+  // mientras se juega esa tanda (estado 'P').
+  const penalesLocal = fixture.score?.penalty?.home ?? null;
+  const penalesVisita = fixture.score?.penalty?.away ?? null;
   const golesVisita = fixture.goals?.away ?? null;
 
   // Eventos tipo "Goal" -> lista de {nombre, minuto, tipo} separada por
@@ -85,10 +237,15 @@ async function obtenerEstadoFixture(fixtureId) {
   // ordenado en la línea de tiempo.
   const idEquipoLocal = fixture.teams?.home?.id;
   const eventos = fixture.events || [];
+  const golesAnulados = construirSetGolesAnulados(eventos);
   const goleadoresLocal = [];
   const goleadoresVisita = [];
   eventos
-    .filter((ev) => ev.type === 'Goal' && ev.detail !== 'Missed Penalty')
+    .filter((ev) => ev.type === 'Goal' && ev.detail !== 'Missed Penalty' && !esEventoDeTandaPenales(ev)
+      // Gol anulado por VAR (a pedido): se saca acá para que no quede
+      // impreso en la tarjeta de partido aunque el marcador ya esté
+      // corregido — ver construirSetGolesAnulados más arriba.
+      && !golesAnulados.has(claveEventoGolVar(ev)))
     .forEach((ev) => {
       const esAutogol = ev.detail === 'Own Goal';
       const esPenal = ev.detail === 'Penalty';
@@ -96,6 +253,16 @@ async function obtenerEstadoFixture(fixtureId) {
       const entrada = {
         nombre: ev.player?.name || 'Gol',
         minuto: minutoBase != null ? minutoBase + (ev.time?.extra || 0) : null,
+        // BUG (reportado): un gol al 45+1 se guardaba solo como minuto=46
+        // (elapsed + extra, para que ordene bien en la línea de tiempo —
+        // ver comentario de arriba), pero el frontend usaba ese mismo 46
+        // para decidir si el gol fue ANTES o DESPUÉS del entretiempo
+        // ("> 45" = segundo tiempo), así que un gol de descuento del PRIMER
+        // tiempo aparecía debajo del separador "MT" como si fuera del
+        // segundo. Se guarda además el elapsed SIN el agregado — ese es el
+        // que hay que usar para decidir de qué mitad es, nunca el que
+        // suma el descuento.
+        minutoBase,
         tipo: esAutogol ? 'autogol' : esPenal ? 'penal' : 'normal',
       };
       const esDelLocal = ev.team?.id === idEquipoLocal;
@@ -108,6 +275,18 @@ async function obtenerEstadoFixture(fixtureId) {
   goleadoresLocal.sort(porMinuto);
   goleadoresVisita.sort(porMinuto);
 
+  // MOMENTUM (a pedido): esta misma llamada a /fixtures?id= ya trae
+  // "statistics" adentro — no cuesta una consulta extra de cuota aprovechar
+  // eso acá para ir guardando snapshots de tiros/corners/posesión con el
+  // minuto de cada corrida de /vivo, y así poder armar un gráfico de
+  // "quién domina" sin depender de un dato de momentum que la API no tiene.
+  const estadisticas = extraerEstadisticas(fixture, idEquipoLocal);
+
+  // Roja a jugador de cancha (a pedido, mini tarjeta): ver huboRojaDeCancha
+  // más arriba. Se calcula acá porque esta misma llamada ya trae lineups +
+  // events juntos — no hace falta pegarle a otro endpoint aparte.
+  const { rojaLocal, rojaVisita } = huboRojaDeCancha(fixture);
+
   return {
     estado,
     minuto,
@@ -117,14 +296,61 @@ async function obtenerEstadoFixture(fixtureId) {
     golesVisita,
     goleadoresLocal,
     goleadoresVisita,
+    estadisticas,
+    penalesLocal,
+    penalesVisita,
+    estadioNombre,
+    estadioCiudad,
+    estadioVenueId,
+    arbitro,
+    arbitroPais,
+    rojaLocal,
+    rojaVisita,
+  };
+}
+
+// ---------- Datos del estadio (capacidad/césped/año, usado por /cuotas ----------
+// junto con estadioVenueId de obtenerEstadoFixture) ----------
+// API-Football separa esto del fixture: /venues?id= trae name/city/country/
+// capacity/surface/image/address — acá solo se usan capacity, surface,
+// country (el "año de fundación" NO lo entrega este endpoint pese a que a
+// veces se pide; si en el futuro aparece en la respuesta se puede sumar,
+// por ahora queda null). Se llama solo cuando falta alguno de estos datos
+// (ver cuotas.js), no en cada corrida, para no gastar cuota de más.
+async function obtenerDatosVenue(venueId) {
+  if (!venueId) return null;
+  const resp = await fetch(`${BASE}/venues?id=${venueId}`, { headers });
+  const data = await resp.json();
+  const venue = data?.response?.[0];
+  if (!venue) return null;
+  return {
+    pais: venue.country || null,
+    capacidad: venue.capacity ?? null,
+    cesped: venue.surface || null,
   };
 }
 
 // ---------- Fixtures de una liga completa (usado por /crear-partidos) ----------
+// Devuelve también `errores`/`resultsRestantes` (además del array de
+// fixtures) porque un "revisados: 0" puede significar dos cosas muy
+// distintas: "no hay partidos" o "la API respondió con error/rate-limit y
+// devolvió el response vacío" — sin esto último a la vista, las dos se ven
+// idénticas desde /crear-partidos y no hay cómo distinguirlas de afuera.
 async function obtenerFixturesDeLiga(leagueId, season) {
   const resp = await fetch(`${BASE}/fixtures?league=${leagueId}&season=${season}`, { headers });
   const data = await resp.json();
-  return data?.response || [];
+  const errores = data?.errors;
+  // API-Football a veces manda `errors` como array vacío y a veces como
+  // objeto {} vacío (según el endpoint) — solo cuenta si tiene contenido real.
+  const tieneErrores = errores && (Array.isArray(errores) ? errores.length > 0 : Object.keys(errores).length > 0);
+  return {
+    fixtures: data?.response || [],
+    errores: tieneErrores ? errores : null,
+    // `results` es el contador que manda la propia API-Football — si algún
+    // día difiere de `fixtures.length` (el array que realmente llegó), es
+    // señal de paginación cortada a mitad de camino.
+    resultsApi: data?.results ?? null,
+  };
 }
 
 // ---------- Equipos de una liga (usado por /equipos, para el selector Tier A del Admin) ----------
@@ -175,7 +401,17 @@ async function obtenerPosicionesDeLiga(leagueId, season) {
     })),
   }));
 
-  return { liga: league.name, logo: league.logo, temporada: league.season, grupos };
+  // pais/bandera: para el encabezado de la pantalla de competencia en la app
+  // (escudo de la liga + bandera del país). Vienen gratis en la misma
+  // respuesta de standings, no cuesta ninguna llamada extra.
+  return {
+    liga: league.name,
+    logo: league.logo,
+    pais: league.country || null,
+    bandera: league.flag || null,
+    temporada: league.season,
+    grupos,
+  };
 }
 
 // ---------- Detalle completo de un partido (usado por /detalle-partido) ----------
@@ -193,33 +429,69 @@ async function obtenerDetalleFixture(fixtureId) {
   // Eventos ordenados cronológicamente, ya traducidos a algo que la app
   // pueda pintar directo (tipo + texto), en vez del vocabulario crudo de la
   // API ("Goal"/"subst"/"Card"/"Var").
-  const eventos = (fx.events || []).map((ev) => {
-    const tipo = (ev.type || '').toLowerCase();
-    const detalle = ev.detail || '';
-    let clase = 'otro';
-    if (tipo === 'goal') clase = detalle === 'Missed Penalty' ? 'penal_errado' : detalle === 'Own Goal' ? 'autogol' : detalle === 'Penalty' ? 'penal' : 'gol';
-    else if (tipo === 'card') clase = detalle === 'Red Card' ? 'roja' : 'amarilla';
-    else if (tipo === 'subst') clase = 'cambio';
-    // VAR (a pedido): gol anulado se distingue del resto de revisiones para
-    // poder pintar "Revisión de gol" + "Gol anulado" como dos líneas.
-    else if (tipo === 'var') clase = /goal/i.test(detalle) && /(disallow|cancel|anulad)/i.test(detalle) ? 'gol_anulado' : 'var';
-    return {
-      minuto: ev.time?.elapsed != null ? ev.time.elapsed + (ev.time?.extra || 0) : null,
-      clase,
-      detalle,
-      // En un cambio, "player" es el que ENTRA y "assist" el que sale.
+  const golesAnuladosDetalle = construirSetGolesAnulados(fx.events || []);
+  const eventos = (fx.events || [])
+    // Tanda de penales (a pedido): estos pateos NO van en la línea de tiempo
+    // del partido — "acá solo van goles en tiempo de juego con o sin
+    // alargue". Se sacan de acá y se arman aparte más abajo (tandaPenales).
+    .filter((ev) => !esEventoDeTandaPenales(ev))
+    // Gol anulado por VAR (a pedido, bug reportado: "queda el gol impreso
+    // en el resumen del partido, lo tiene que eliminar"): se saca el evento
+    // "Goal" original — el evento "Var" que lo anuló se mantiene y es el
+    // que el frontend expande en "Revisando gol por el VAR" + "Gol anulado
+    // por el VAR" (ver ResumenEventos en sementomvp.jsx).
+    .filter((ev) => !(ev.type === 'Goal' && golesAnuladosDetalle.has(claveEventoGolVar(ev))))
+    .map((ev) => {
+      const tipo = (ev.type || '').toLowerCase();
+      const detalle = ev.detail || '';
+      let clase = 'otro';
+      if (tipo === 'goal') clase = detalle === 'Missed Penalty' ? 'penal_errado' : detalle === 'Own Goal' ? 'autogol' : detalle === 'Penalty' ? 'penal' : 'gol';
+      else if (tipo === 'card') clase = detalle === 'Red Card' ? 'roja' : 'amarilla';
+      else if (tipo === 'subst') clase = 'cambio';
+      // VAR (a pedido): cuando la revisión es sobre un gol, se distingue si
+      // terminó ANULADO ("Goal Disallowed - Offside", "Goal cancelled",
+      // etc.) o CONFIRMADO ("Goal confirmed") — cada uno con su propia
+      // clase para que el frontend pinte las dos líneas correspondientes
+      // ("Revisando gol por el VAR" + "Gol anulado/validado por el VAR")
+      // en vez de la genérica "Revisión". Cualquier otra revisión VAR (de
+      // un penal, una tarjeta) que no sea sobre un gol queda como 'var'
+      // genérica, tal como antes.
+      else if (tipo === 'var') {
+        clase = esVarSobreGol(ev, PATRON_GOL_ANULADO) ? 'gol_anulado'
+          : esVarSobreGol(ev, PATRON_GOL_CONFIRMADO) ? 'gol_confirmado'
+          : 'var';
+      }
+      return {
+        minuto: ev.time?.elapsed != null ? ev.time.elapsed + (ev.time?.extra || 0) : null,
+        clase,
+        detalle,
+        // En un cambio, "player" es el que ENTRA y "assist" el que sale.
+        jugador: ev.player?.name || null,
+        secundario: ev.assist?.name || null,
+        // Los ids son lo que permite cruzar el evento con el jugador de la
+        // alineación. Cruzar por NOMBRE no sirve: API-Football manda
+        // "G. Ávalos" en la alineación y "Gabriel Ávalos" en el evento según
+        // el caso, y con acentos y apellidos compuestos eso falla seguido.
+        jugadorId: ev.player?.id ?? null,
+        secundarioId: ev.assist?.id ?? null,
+        esLocal: ev.team?.id === idLocal,
+        equipo: ev.team?.name || null,
+      };
+    }).sort((a, b) => (a.minuto ?? 999) - (b.minuto ?? 999));
+
+  // Tanda de penales, aparte (a pedido: "los goleadores de los penales van
+  // abajo en el resumen del partido"). Orden = el mismo que mandó la API
+  // (elapsed creciente 121, 122, 123...), que es el orden real de los
+  // pateos.
+  const tandaPenales = (fx.events || [])
+    .filter(esEventoDeTandaPenales)
+    .map((ev) => ({
       jugador: ev.player?.name || null,
-      secundario: ev.assist?.name || null,
-      // Los ids son lo que permite cruzar el evento con el jugador de la
-      // alineación. Cruzar por NOMBRE no sirve: API-Football manda
-      // "G. Ávalos" en la alineación y "Gabriel Ávalos" en el evento según
-      // el caso, y con acentos y apellidos compuestos eso falla seguido.
-      jugadorId: ev.player?.id ?? null,
-      secundarioId: ev.assist?.id ?? null,
+      convertido: ev.detail !== 'Missed Penalty',
       esLocal: ev.team?.id === idLocal,
-      equipo: ev.team?.name || null,
-    };
-  }).sort((a, b) => (a.minuto ?? 999) - (b.minuto ?? 999));
+      orden: ev.time?.elapsed ?? 999,
+    }))
+    .sort((a, b) => a.orden - b.orden);
 
   // El id de cada jugador vale doble: sirve para cruzar los eventos (goles,
   // tarjetas, cambios) con su ficha en la cancha, y para armar la URL de su
@@ -256,16 +528,7 @@ async function obtenerDetalleFixture(fixtureId) {
   const alineacionLocal = armarAlineacion(lineups.find((l) => l.team?.id === idLocal));
   const alineacionVisita = armarAlineacion(lineups.find((l) => l.team?.id !== idLocal));
 
-  // Estadísticas (tiros, posesión, corners...): vienen como pares
-  // {type, value} por equipo. Se cruzan en una sola lista para que la app
-  // pinte "local | concepto | visita" sin tener que emparejar nada.
-  const statsLocal = (fx.statistics || []).find((s) => s.team?.id === idLocal)?.statistics || [];
-  const statsVisita = (fx.statistics || []).find((s) => s.team?.id !== idLocal)?.statistics || [];
-  const estadisticas = statsLocal.map((s) => ({
-    concepto: s.type,
-    local: s.value,
-    visita: statsVisita.find((x) => x.type === s.type)?.value ?? null,
-  }));
+  const estadisticas = extraerEstadisticas(fx, idLocal);
 
   return {
     equipoLocal: fx.teams?.home?.name || '',
@@ -275,6 +538,7 @@ async function obtenerDetalleFixture(fixtureId) {
     equipoLocalId: fx.teams?.home?.id ?? null,
     equipoVisitaId: fx.teams?.away?.id ?? null,
     eventos,
+    tandaPenales,
     alineacionLocal,
     alineacionVisita,
     estadisticas,
@@ -339,6 +603,44 @@ async function obtenerFichaJugador(playerId) {
 }
 
 // ============================================================
+// PERFIL BÁSICO DE JUGADOR (solo edad + nacionalidad, en lote)
+// ============================================================
+// Para los filtros de "nacionalidad" y "edad" sobre la cancha (a pedido):
+// la alineación de /fixtures NO trae ni edad ni nacionalidad (armarJugador
+// más arriba solo tiene id/nombre/número/posición/grid) — ese dato solo
+// sale de /players/profiles, UN jugador a la vez. Con 18-20 jugadores por
+// equipo eso son hasta 40 llamadas por partido, así que se cachea agresivo
+// (30 días: la edad de un jugador no cambia de un partido a otro) y se
+// pide en paralelo — ver rutaPerfilesJugadores en rutas/equiposIds.js.
+const CACHE_PERFIL_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_JUGADORES_EN_CACHE = 3000;
+const cachePerfilesJugador = new Map(); // playerId -> { datos, expira }
+
+async function obtenerPerfilBasicoJugador(playerId) {
+  const clave = String(playerId);
+  const enCache = cachePerfilesJugador.get(clave);
+  if (enCache && enCache.expira > Date.now()) return enCache.datos;
+
+  const resp = await fetch(`${BASE}/players/profiles?player=${playerId}`, { headers });
+  const data = await resp.json();
+  const p = data?.response?.[0]?.player;
+  if (!p) return null;
+
+  const perfil = {
+    id: p.id,
+    edad: p.age ?? null,
+    nacionalidad: p.nationality || null,
+  };
+
+  if (cachePerfilesJugador.size >= MAX_JUGADORES_EN_CACHE) {
+    cachePerfilesJugador.delete(cachePerfilesJugador.keys().next().value);
+  }
+  cachePerfilesJugador.set(clave, { datos: perfil, expira: Date.now() + CACHE_PERFIL_MS });
+
+  return perfil;
+}
+
+// ============================================================
 // FICHA DE CLUB
 // ============================================================
 // Una sola llamada: /fixtures?team=&last=5 ya trae los últimos 5 partidos
@@ -361,9 +663,24 @@ async function obtenerFichaClub(teamId) {
   const enCache = cacheClubes.get(clave);
   if (enCache && enCache.expira > Date.now()) return enCache.datos;
 
-  const resp = await fetch(`${BASE}/fixtures?team=${teamId}&last=5`, { headers });
+  // Se pide de a 15 (no 5): "last=5" de API-Football cuenta por fecha de
+  // partido, así que si hay uno en vivo o recién terminado sin resultado
+  // todavía cargado, entra en el lote y desplaza a uno de verdad jugado.
+  // Acá abajo se filtra a solo los FINALIZADOS y recién ahí se cortan los
+  // últimos 5 reales.
+  const resp = await fetch(`${BASE}/fixtures?team=${teamId}&last=15`, { headers });
   const data = await resp.json();
-  const fixtures = data?.response || [];
+  const todosFixtures = data?.response || [];
+  if (todosFixtures.length === 0) return null;
+
+  // Solo partidos ya TERMINADOS (FT = tiempo reglamentario, AET = alargue,
+  // PEN = penales). Uno en vivo (1H/2H/HT/ET/LIVE/BT/P) o programado (NS,
+  // TBD) no es un resultado real todavía y no debe aparecer en "Últimos 5".
+  const ESTADOS_FINALIZADO = new Set(['FT', 'AET', 'PEN']);
+  const fixtures = todosFixtures
+    .filter((fx) => ESTADOS_FINALIZADO.has(fx.fixture?.status?.short))
+    .sort((a, b) => String(b.fixture?.date || '').localeCompare(String(a.fixture?.date || '')))
+    .slice(0, 5);
   if (fixtures.length === 0) return null;
 
   const idNum = Number(teamId);
@@ -441,4 +758,4 @@ async function obtenerFichaClub(teamId) {
   return ficha;
 }
 
-module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture, obtenerFichaJugador, obtenerFichaClub };
+module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture, obtenerFichaJugador, obtenerFichaClub, obtenerPerfilBasicoJugador };
