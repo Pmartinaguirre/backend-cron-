@@ -21,7 +21,36 @@ const { obtenerCanalesTv, coincideEquipo, SLUGS_POR_COMPETENCIA } = require('../
 // que salen todos "sin canal todavía" y se gasta la corrida en vano.
 const DIAS_VENTANA = Number(process.env.DIAS_VENTANA_CANALES_TV) || 10;
 
+// ?diagnosticoRaw=1&slug=liga-argentina (a pedido, "encontró 2 partidos de
+// HOY pero ninguno de los días siguientes" — para descartar de una que el
+// fetch le esté llegando recortado/bloqueado por el sitio, ANTES de tocar
+// el parser): pide el HTML crudo tal cual y cuenta tablas/filas, sin pasar
+// por cheerio ni por la base. Sacar de la URL una vez resuelto.
+async function rutaDiagnosticoRaw(req, res) {
+  const slug = req.query.slug || 'liga-argentina';
+  try {
+    const resp = await fetch(`https://www.futbolenvivochile.com/competicion/${slug}`, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; demasterapp-bot/1.0; +https://demaster.app)' },
+    });
+    const html = await resp.text();
+    res.json({
+      status: resp.status,
+      largoHtml: html.length,
+      cantidadTablas: (html.match(/<table/gi) || []).length,
+      cantidadFilas: (html.match(/<tr/gi) || []).length,
+      primeros1000: html.slice(0, 1000),
+      // Un pedazo del medio también, por si el recorte pasa a mitad de
+      // camino (ej. un límite de tamaño de respuesta) en vez de al final.
+      mitad1000: html.slice(Math.floor(html.length / 2), Math.floor(html.length / 2) + 1000),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+}
+
 async function rutaCanalesTv(req, res) {
+  if (req.query.diagnosticoRaw === '1') return rutaDiagnosticoRaw(req, res);
+
   const ahora = new Date();
   const limite = new Date(ahora);
   limite.setDate(limite.getDate() + DIAS_VENTANA);
