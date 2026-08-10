@@ -66,7 +66,11 @@ async function rutaCanalesTv(req, res) {
     return res.status(500).json({ error: error.message });
   }
 
-  const resultado = { revisados: (partidos || []).length, actualizados: 0, errores: [] };
+  // `detalle` (a pedido: "no sé bien qué está cambiando" — la respuesta
+  // antes solo decía un número, sin decir CUÁLES partidos ni A QUÉ canal
+  // quedaron ni DE DÓNDE salió el dato): un renglón por cada partido que se
+  // actualiza esta corrida, con la fuente que lo resolvió.
+  const resultado = { revisados: (partidos || []).length, actualizados: 0, errores: [], detalle: [] };
   if (!partidos || partidos.length === 0) {
     return res.json(resultado);
   }
@@ -82,8 +86,12 @@ async function rutaCanalesTv(req, res) {
       .from('desafios_mvp')
       .update({ canales_tv: CANALES_CHILE_DEFAULT })
       .eq('id', partido.id);
-    if (errUpdate) resultado.errores.push({ id: partido.id, pregunta: partido.pregunta, error: errUpdate.message });
-    else resultado.actualizados++;
+    if (errUpdate) {
+      resultado.errores.push({ id: partido.id, pregunta: partido.pregunta, error: errUpdate.message });
+    } else {
+      resultado.actualizados++;
+      resultado.detalle.push({ pregunta: partido.pregunta, tema: partido.tema, fuente: 'fijo (Chile)', canal: CANALES_CHILE_DEFAULT });
+    }
   }
 
   // PASADA 1 — Argentina, días distintos a hoy: agenda genérica de
@@ -116,10 +124,20 @@ async function rutaCanalesTv(req, res) {
   if (argentinaResto.length > 0) {
     const agenda = await cargarAgendaDisney();
     for (const partido of argentinaResto) {
-      const canal = enAgendaDisney(agenda, partido) ? CANALES_ESPN_DISNEY : CANALES_TYC_DEFAULT;
+      const encontrado = enAgendaDisney(agenda, partido);
+      const canal = encontrado ? CANALES_ESPN_DISNEY : CANALES_TYC_DEFAULT;
       const { error: errUpdate } = await supabase.from('desafios_mvp').update({ canales_tv: canal }).eq('id', partido.id);
-      if (errUpdate) resultado.errores.push({ id: partido.id, pregunta: partido.pregunta, error: errUpdate.message });
-      else resultado.actualizados++;
+      if (errUpdate) {
+        resultado.errores.push({ id: partido.id, pregunta: partido.pregunta, error: errUpdate.message });
+      } else {
+        resultado.actualizados++;
+        resultado.detalle.push({
+          pregunta: partido.pregunta,
+          tema: partido.tema,
+          fuente: encontrado ? 'livesoccertv (genérico, en agenda Disney+)' : 'livesoccertv (genérico, default TyC)',
+          canal,
+        });
+      }
     }
   }
 
@@ -146,17 +164,25 @@ async function rutaCanalesTv(req, res) {
       );
 
       let canal = null;
+      let fuente = null;
       if (matchWosti) {
         canal = matchWosti.canales; // exacto, pisa lo que haya
+        fuente = 'Wosti (exacto, hoy)';
       } else if (partido.canales_tv == null) {
         const agenda = await cargarAgendaDisney();
-        canal = enAgendaDisney(agenda, partido) ? CANALES_ESPN_DISNEY : CANALES_TYC_DEFAULT;
+        const encontrado = enAgendaDisney(agenda, partido);
+        canal = encontrado ? CANALES_ESPN_DISNEY : CANALES_TYC_DEFAULT;
+        fuente = encontrado ? 'livesoccertv (respaldo, Wosti no lo encontró)' : 'livesoccertv (respaldo, default TyC)';
       }
       if (canal == null) continue; // ya tenía algo genérico y Wosti no mejoró nada hoy: se deja como está
 
       const { error: errUpdate } = await supabase.from('desafios_mvp').update({ canales_tv: canal }).eq('id', partido.id);
-      if (errUpdate) resultado.errores.push({ id: partido.id, pregunta: partido.pregunta, error: errUpdate.message });
-      else resultado.actualizados++;
+      if (errUpdate) {
+        resultado.errores.push({ id: partido.id, pregunta: partido.pregunta, error: errUpdate.message });
+      } else {
+        resultado.actualizados++;
+        resultado.detalle.push({ pregunta: partido.pregunta, tema: partido.tema, fuente, canal });
+      }
     }
   }
 
