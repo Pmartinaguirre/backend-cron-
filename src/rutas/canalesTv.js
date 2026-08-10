@@ -63,6 +63,24 @@ async function rutaCanalesTv(req, res) {
     }
   }
 
+  // ?diagnostico=1 (a pedido, "0 de 11 matchearon" — para ver SIN adivinar
+  // si el scraper está trayendo filas de la web y, si las trae, por qué no
+  // calzan contra nuestros partidos): responde lo que se scrapeó de cada
+  // competencia + los partidos de la base tal como quedaron para comparar,
+  // SIN escribir nada en la base. Sacar de la URL una vez resuelto.
+  if (req.query.diagnostico === '1') {
+    return res.json({
+      scrapeadoPorTema,
+      partidosBase: partidos.map((p) => ({
+        id: p.id,
+        tema: p.tema,
+        equipo_local: p.equipo_local,
+        equipo_visitante: p.equipo_visitante,
+        fecha_chile: new Date(p.fecha_expiracion).toLocaleDateString('en-CA', { timeZone: 'America/Santiago' }),
+      })),
+    });
+  }
+
   for (const partido of partidos) {
     const candidatos = scrapeadoPorTema[partido.tema] || [];
     // Fecha del partido en huso de Chile (America/Santiago), para
