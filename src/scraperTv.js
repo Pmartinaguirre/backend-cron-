@@ -61,6 +61,23 @@ const COMPETENCIAS_CHILE = ['Primera División Chile', 'Copa Chile', 'Copa de la
 const CANALES_ESPN_DISNEY = ['ESPN', 'Disney+ Premium'];
 const CANALES_TYC_DEFAULT = ['TyC Sports Internacional'];
 
+// FANATIZ (a pedido: "falta agregar Fanatiz, va en TODOS los partidos de
+// Argentina siempre"): es un streaming que retransmite la Primera División
+// Argentina completa, partido por partido, sin excepción — a diferencia de
+// ESPN/Disney+/TyC (que se reparten los partidos entre sí), Fanatiz va
+// SIEMPRE, así que no depende de ningún scraping ni matching: se agrega a
+// mano en el backend a cualquier canal de Argentina, sin importar de qué
+// fuente haya salido el resto de la lista (Wosti exacto, agenda genérica,
+// o default TyC). Wosti sí lo trae en su HTML, pero como link de afiliado
+// (fanatiz.jbbfvx.net, no /canal/...) que el parser de obtenerCanalesTv no
+// captura — más simple y confiable garantizarlo acá que ajustar el parser
+// para un caso que de todos modos siempre es "sí".
+const CANAL_FANATIZ = 'Fanatiz';
+function conFanatiz(canales) {
+  const lista = Array.isArray(canales) ? canales.filter(Boolean) : [];
+  return lista.includes(CANAL_FANATIZ) ? lista : [CANAL_FANATIZ, ...lista];
+}
+
 // Normaliza un nombre de equipo para poder comparar el de nuestra base
 // (viene de API-Football) contra el que usa futbolenvivochile.com — casi
 // nunca son IDÉNTICOS letra por letra ("CDU Católica" vs "Universidad
@@ -203,6 +220,7 @@ module.exports = {
   obtenerAgendaDisneyArgentina,
   coincideEquipo,
   normalizarEquipo,
+  conFanatiz,
   SLUGS_POR_COMPETENCIA,
   CANALES_CHILE_DEFAULT,
   COMPETENCIAS_CHILE,
