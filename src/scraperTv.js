@@ -25,12 +25,41 @@ const cheerio = require('cheerio');
 // "Chile + Argentina", las mismas 4 competencias que ya cubre la búsqueda
 // automática de YouTube en media.js). Agregar acá cualquier competencia
 // nueva que se quiera sumar más adelante.
+//
+// YA NO SE USA para Chile (ver CANALES_CHILE_DEFAULT más abajo) ni para
+// Argentina (ver obtenerAgendaDisneyArgentina) — el scraping de
+// futbolenvivochile.com quedó solo como respaldo/referencia por si algún
+// día se agrega otra competencia que no tenga una fuente mejor.
 const SLUGS_POR_COMPETENCIA = {
   'Primera División Chile': 'primera-division-chile',
   'Copa Chile': 'copa-chile',
   'Copa de la Liga': 'copa-de-la-liga-chile',
   'Primera División Argentina': 'liga-argentina',
 };
+
+// FÚTBOL CHILENO (a pedido: "para el fútbol chileno siempre son los mismos,
+// no hay que buscar nada") — canal fijo, sin scraping. Confirmado a mano
+// mirando varias fechas en futbolenvivochile.com: TNT Sports tiene los
+// derechos de la Primera División chilena completa, con HBO Max como
+// streaming adicional. Si algún día cambia el paquete de derechos de TV,
+// esta lista se edita a mano acá — no depende de ningún scraper.
+const CANALES_CHILE_DEFAULT = ['TNT Sports Premium HD', 'TNT Sports Premium', 'HBO MAX'];
+const COMPETENCIAS_CHILE = ['Primera División Chile', 'Copa Chile', 'Copa de la Liga'];
+
+// FÚTBOL ARGENTINO (a pedido: "en ESPN.cl se publica la agenda semanal de
+// lo que transmite ESPN/Disney+ en Chile... los demás partidos los da
+// TyC Sports Internacional, siempre es así"): en vez de scrapear el
+// artículo semanal de ESPN.cl (su URL cambia cada semana — id de nota
+// nuevo, no hay forma de adivinarlo sin buscarlo primero), se usa
+// livesoccertv.com/channels/starpluscl/ — la ficha de "Disney+ Premium
+// Chile" de un sitio que agrega guías de canales por país. Misma
+// información (qué partidos pasa ESPN/Disney+ en Chile) pero con URL FIJA,
+// que es justo lo que necesita un cron: no hay que descubrir nada cada
+// semana. Cualquier partido de Primera Argentina que NO aparezca ahí se
+// asume TyC Sports Internacional (regla de Pablo, confirmada: "siempre es
+// así" para lo que no está en la agenda de ESPN).
+const CANALES_ESPN_DISNEY = ['ESPN', 'Disney+ Premium'];
+const CANALES_TYC_DEFAULT = ['TyC Sports Internacional'];
 
 // Normaliza un nombre de equipo para poder comparar el de nuestra base
 // (viene de API-Football) contra el que usa futbolenvivochile.com — casi
@@ -110,4 +139,73 @@ async function obtenerCanalesTv(slug) {
   return partidos;
 }
 
-module.exports = { obtenerCanalesTv, coincideEquipo, normalizarEquipo, SLUGS_POR_COMPETENCIA };
+// Ficha de canal de livesoccertv.com (Disney+ Premium Chile): una tabla con
+// filas de encabezado de fecha (1 sola celda, con un link a
+// /schedules/YYYY-MM-DD/ — de ahí se saca la fecha, sin tener que parsear
+// "Monday, 10 August" a mano) seguidas de filas de partido (hora/estado,
+// link al partido con el cruce en la URL tipo "equipo-a-vs-equipo-b", link
+// a la competencia). Acá SOLO se quedan las filas cuya competencia sea
+// justo Primera División Argentina (href con "/argentina/primera-division/")
+// — de todos los partidos que este canal transmite en el mundo, es lo único
+// que nos importa. El nombre de cada equipo se saca del SLUG de la URL del
+// partido (ej. "union-santa-fe-vs-central-cordoba-sde"), no del texto
+// visible: el texto cambia de formato entre "Equipo A vs Equipo B" (por
+// jugar) y "Equipo A 2 - 1 Equipo B" (en vivo/terminado), pero el slug de
+// la URL usa siempre el mismo separador "-vs-", así que es más confiable
+// parsear ahí.
+async function obtenerAgendaDisneyArgentina() {
+  const resp = await fetch('https://www.livesoccertv.com/channels/starpluscl/', {
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; demasterapp-bot/1.0; +https://demaster.app)' },
+  });
+  if (!resp.ok) return [];
+  const html = await resp.text();
+  const $ = cheerio.load(html);
+  const partidos = [];
+  let fechaActual = null; // 'YYYY-MM-DD'
+
+  $('table tr').each((_, tr) => {
+    const $tr = $(tr);
+    const celdas = $tr.find('td');
+
+    if (celdas.length <= 1) {
+      const hrefFecha = $tr.find('a[href*="/schedules/"]').attr('href') || '';
+      const m = hrefFecha.match(/\/schedules\/(\d{4}-\d{2}-\d{2})/);
+      if (m) fechaActual = m[1];
+      return;
+    }
+
+    if (!fechaActual) return;
+
+    // Filtro por competencia PRIMERO (más barato y más preciso que tratar
+    // de adivinar por nombre de equipo): si esta fila no es de Primera
+    // Argentina, ni vale la pena mirarla.
+    const esArgentina = $tr.find('a[href*="/competitions/argentina/primera-division/"]').length > 0;
+    if (!esArgentina) return;
+
+    const hrefMatch = $tr.find('a[href*="/match/"]').first().attr('href') || '';
+    const m2 = hrefMatch.match(/\/match\/([^/]+)\//);
+    if (!m2) return;
+    const partes = m2[1].split('-vs-');
+    if (partes.length !== 2) return;
+
+    partidos.push({
+      fecha: fechaActual,
+      equipoLocal: partes[0].replace(/-/g, ' '),
+      equipoVisita: partes[1].replace(/-/g, ' '),
+    });
+  });
+
+  return partidos;
+}
+
+module.exports = {
+  obtenerCanalesTv,
+  obtenerAgendaDisneyArgentina,
+  coincideEquipo,
+  normalizarEquipo,
+  SLUGS_POR_COMPETENCIA,
+  CANALES_CHILE_DEFAULT,
+  COMPETENCIAS_CHILE,
+  CANALES_ESPN_DISNEY,
+  CANALES_TYC_DEFAULT,
+};
