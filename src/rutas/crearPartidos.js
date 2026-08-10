@@ -78,6 +78,24 @@ function esInstanciaFinal(nombreRonda) {
   return KEYWORDS_KNOCKOUT.some((k) => texto.includes(k));
 }
 
+// Rondas que se filtran por Tier A AUNQUE la competencia esté en modo
+// COMPLETA (a pedido: "elimina todos los partidos de la Champions League de
+// 3rd Qualifying Round, esta ronda no se trae por default, solo se trae un
+// partido de esta ronda si hay algún equipo Tier A que juega esta ronda").
+// Motivo: Champions League está en MODO_COMPLETA (ver ligas.js) porque una
+// vez que arranca la fase de grupos/liga se quiere completa — pero la
+// previa (clasificación) mete decenas de equipos chicos de ligas menores
+// que nadie va a pronosticar, mezclados en la MISMA competencia. Reutiliza
+// la lista Tier A de Champions League que ya carga el admin para marcar
+// "Destacados" en el resto del torneo (mismo panel ⭐ Equipos Tier A).
+const RONDAS_FORZAR_TIER_A = [
+  '3rd qualifying round',
+];
+function esRondaForzadaTierA(nombreRonda) {
+  const texto = String(nombreRonda || '').toLowerCase();
+  return RONDAS_FORZAR_TIER_A.some((k) => texto.includes(k));
+}
+
 function equipoEnTierA(nombreEquipo, listaTierA) {
   return listaTierA.some((tierA) => esMismoEquipo(tierA, nombreEquipo));
 }
@@ -253,8 +271,13 @@ async function rutaCrearPartidos(req, res) {
         // El recorte por Tier A en estas competencias pasa a ser una decisión
         // de cada GRUPO, y filtra lo que se muestra. Para poder ocultar un
         // partido primero hay que tenerlo.
+        //
+        // EXCEPCIÓN dentro de la excepción (a pedido, ver RONDAS_FORZAR_TIER_A
+        // más arriba): 3rd Qualifying Round de Champions League se filtra por
+        // Tier A igual, aunque la competencia esté en modo COMPLETA.
         const modo = modoDeCompetencia(competencia);
-        if (!esFinal && modo === MODO_TIER_A) {
+        const forzarTierA = esRondaForzadaTierA(nombreRonda);
+        if (!esFinal && (modo === MODO_TIER_A || forzarTierA)) {
           // Si la competencia no tiene Tier A cargado todavía, no se trae
           // nada de temporada regular (para no traer la liga completa por
           // accidente si se olvidó configurar la lista).
