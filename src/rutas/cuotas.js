@@ -49,7 +49,7 @@ async function rutaCuotas(req, res) {
   const limiteTBD = new Date(ahora);
   limiteTBD.setDate(limiteTBD.getDate() + DIAS_VENTANA_TBD);
 
-  const columnas = 'id, pregunta, fixture_id_api, categoria, fecha_expiracion, estado_partido, cuota_local, estadio, estadio_ciudad, estadio_pais, estadio_capacidad, estadio_cesped, estadio_venue_id, arbitro, arbitro_pais';
+  const columnas = 'id, pregunta, fixture_id_api, categoria, fecha_expiracion, estado_partido, cuota_local, estadio, estadio_ciudad, estadio_pais, estadio_capacidad, estadio_cesped, estadio_venue_id, estadio_imagen, arbitro, arbitro_pais';
 
   // Estadio + árbitro (a pedido, "Información del partido" en la app): se
   // traen JUNTO con las cuotas, en la misma corrida — mismo criterio que
@@ -179,6 +179,8 @@ async function rutaCuotas(req, res) {
           if (venue?.pais != null) payload.estadio_pais = venue.pais;
           if (venue?.capacidad != null) payload.estadio_capacidad = venue.capacidad;
           if (venue?.cesped != null) payload.estadio_cesped = venue.cesped;
+          // Foto del estadio (a pedido: "agrega una foto del estadio").
+          if (venue?.imagen != null) payload.estadio_imagen = venue.imagen;
         }
       }
       if (Object.keys(payload).length === 0) {
