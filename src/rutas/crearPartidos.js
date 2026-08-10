@@ -39,6 +39,19 @@ const { esMismoEquipo } = require('../normalizar');
 const { subtituloFecha, tiempoCorto } = require('../utilFechas');
 const { LIGAS, TEMPORADA, modoDeCompetencia, MODO_TIER_A } = require('../ligas');
 
+// Nombres de equipo más cortos que el que manda API-Football (a pedido).
+// Agregar acá cualquier otro caso parecido ("le sobra un apellido") sin
+// tocar el resto del archivo.
+const NOMBRES_EQUIPO_OVERRIDE = {
+  'Central Cordoba de Santiago': 'Central Cordoba',
+  'Central Córdoba de Santiago': 'Central Cordoba',
+  'Central Córdoba (SdE)': 'Central Cordoba',
+};
+function renombrarEquipo(nombre) {
+  if (!nombre) return nombre;
+  return NOMBRES_EQUIPO_OVERRIDE[nombre] || nombre;
+}
+
 // Cuántos días hacia adelante se buscan partidos nuevos. Con esto no hace
 // falta la lógica vieja de "activar la próxima fecha a mano": el cron solo
 // trae lo que ya está por jugarse pronto, y lo crea directo con
@@ -248,8 +261,15 @@ async function rutaCrearPartidos(req, res) {
         }
 
         const nombreRonda = fx.league?.round || '';
-        const equipoLocal = fx.teams?.home?.name;
-        const equipoVisita = fx.teams?.away?.name;
+        // Nombres cortos (a pedido, "llámalo Central Cordoba" — API-Football
+        // manda "Central Cordoba de Santiago" para distinguirlo del Central
+        // Córdoba de Rosario, pero para la app ese apellido de más solo
+        // ensucia la mini tarjeta): NOMBRES_EQUIPO_OVERRIDE se aplica ACÁ,
+        // apenas se lee el nombre de API-Football, así que pregunta/
+        // opciones/equipo_local/equipo_visitante quedan todos consistentes
+        // desde que se crea el partido — no hay que tocar nada más abajo.
+        const equipoLocal = renombrarEquipo(fx.teams?.home?.name);
+        const equipoVisita = renombrarEquipo(fx.teams?.away?.name);
         // En fases eliminatorias sorteadas por resultado (ej. definir rival
         // de Round of 16 según quién gane la fase anterior), API-Football a
         // veces todavía no tiene los dos equipos confirmados — el fixture
