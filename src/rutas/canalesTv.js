@@ -26,6 +26,7 @@ const {
   obtenerCanalesTv,
   obtenerAgendaDisneyArgentina,
   coincideEquipo,
+  conFanatiz,
   SLUGS_POR_COMPETENCIA,
   CANALES_CHILE_DEFAULT,
   COMPETENCIAS_CHILE,
@@ -125,7 +126,9 @@ async function rutaCanalesTv(req, res) {
     const agenda = await cargarAgendaDisney();
     for (const partido of argentinaResto) {
       const encontrado = enAgendaDisney(agenda, partido);
-      const canal = encontrado ? CANALES_ESPN_DISNEY : CANALES_TYC_DEFAULT;
+      // Fanatiz (a pedido, "va en todos los partidos de Argentina
+      // siempre"): se agrega SIEMPRE, sin importar la fuente del resto.
+      const canal = conFanatiz(encontrado ? CANALES_ESPN_DISNEY : CANALES_TYC_DEFAULT);
       const { error: errUpdate } = await supabase.from('desafios_mvp').update({ canales_tv: canal }).eq('id', partido.id);
       if (errUpdate) {
         resultado.errores.push({ id: partido.id, pregunta: partido.pregunta, error: errUpdate.message });
@@ -166,12 +169,15 @@ async function rutaCanalesTv(req, res) {
       let canal = null;
       let fuente = null;
       if (matchWosti) {
-        canal = matchWosti.canales; // exacto, pisa lo que haya
+        // Fanatiz (a pedido): Wosti SÍ lo trae en su HTML, pero como link
+        // de afiliado que obtenerCanalesTv no captura (no matchea
+        // "/canal/") — se agrega acá a mano para no depender de eso.
+        canal = conFanatiz(matchWosti.canales); // exacto, pisa lo que haya
         fuente = 'Wosti (exacto, hoy)';
       } else if (partido.canales_tv == null) {
         const agenda = await cargarAgendaDisney();
         const encontrado = enAgendaDisney(agenda, partido);
-        canal = encontrado ? CANALES_ESPN_DISNEY : CANALES_TYC_DEFAULT;
+        canal = conFanatiz(encontrado ? CANALES_ESPN_DISNEY : CANALES_TYC_DEFAULT);
         fuente = encontrado ? 'livesoccertv (respaldo, Wosti no lo encontró)' : 'livesoccertv (respaldo, default TyC)';
       }
       if (canal == null) continue; // ya tenía algo genérico y Wosti no mejoró nada hoy: se deja como está
