@@ -22,6 +22,7 @@ const { rutaJugador, rutaClub } = require('./src/rutas/fichas');
 const { rutaBackfillEquipos, rutaForma, rutaPerfilesJugadores } = require('./src/rutas/equiposIds');
 const { rutaMomentum } = require('./src/rutas/momentum');
 const { rutaMedia } = require('./src/rutas/media');
+const { rutaCanalesTv } = require('./src/rutas/canalesTv');
 const { rutaDiagnosticoCobertura } = require('./src/rutas/diagnosticoCobertura');
 const { rutaDiagnosticoPartido } = require('./src/rutas/diagnosticoPartido');
 const { rutaDiagnosticoIds } = require('./src/rutas/diagnosticoIds');
@@ -50,6 +51,13 @@ app.post('/media', exigirSecreto, rutaMedia);
 
 app.get('/resolver', exigirSecreto, rutaResolver);
 app.post('/resolver', exigirSecreto, rutaResolver);
+
+// /canales-tv: búsqueda automática (scraping de futbolenvivochile.com) de
+// los canales de TV que transmiten cada partido próximo — ver
+// src/rutas/canalesTv.js y src/scraperTv.js (nota de riesgo: NO es una API
+// oficial). Escribe en la base, así que lleva secreto igual que /cuotas.
+app.get('/canales-tv', exigirSecreto, rutaCanalesTv);
+app.post('/canales-tv', exigirSecreto, rutaCanalesTv);
 
 // /ganador-semanal: corre 1 vez por semana (a pedido, premio "Ganador
 // semanal" por grupo) — ver src/rutas/ganadorSemanal.js.
