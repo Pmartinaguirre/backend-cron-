@@ -15,7 +15,9 @@ const { rutaEquipos } = require('./src/rutas/equipos');
 const { rutaInvitarAGrupo } = require('./src/rutas/invitarAGrupo');
 const { rutaEnviarResumenMesa } = require('./src/rutas/enviarResumenMesa');
 const { rutaPosicionesLiga } = require('./src/rutas/posicionesLiga');
+const { rutaHistorialEnfrentamientos } = require('./src/rutas/historialEnfrentamientos');
 const { rutaDetallePartido } = require('./src/rutas/detallePartido');
+const { rutaLesionados } = require('./src/rutas/lesionados');
 const { rutaJugador, rutaClub } = require('./src/rutas/fichas');
 const { rutaBackfillEquipos, rutaForma, rutaPerfilesJugadores } = require('./src/rutas/equiposIds');
 const { rutaMomentum } = require('./src/rutas/momentum');
@@ -74,12 +76,28 @@ app.get('/posiciones-liga', (req, res, next) => {
   next();
 }, rutaPosicionesLiga);
 
+// /historial-enfrentamientos: últimos cruces terminados entre 2 equipos —
+// mismo caso que /posiciones-liga, solo lectura, la llama el navegador
+// desde el módulo "Historial de enfrentamientos" de la tarjeta de partido.
+app.get('/historial-enfrentamientos', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  next();
+}, rutaHistorialEnfrentamientos);
+
 // /detalle-partido: eventos + alineaciones + estadísticas de un partido,
 // para las pestañas de la tarjeta. Solo lectura, lo llama el navegador.
 app.get('/detalle-partido', (req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   next();
 }, rutaDetallePartido);
+
+// /lesionados: jugadores lesionados/suspendidos para un partido puntual —
+// mismo caso que /detalle-partido, solo lectura, la llama el navegador desde
+// la pestaña "Alineaciones" de la tarjeta de partido.
+app.get('/lesionados', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  next();
+}, rutaLesionados);
 
 // /jugador y /club: las fichas que se abren al tocar la foto de un jugador o
 // el escudo de un equipo en la pestaña Alineaciones. Solo lectura, las llama
