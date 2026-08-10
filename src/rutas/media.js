@@ -313,7 +313,10 @@ const ALIASES_POR_EQUIPO = {
   'Talleres Cordoba': ['Talleres'],
   'Belgrano Cordoba': ['Belgrano'],
   'Instituto Cordoba': ['Instituto'],
-  'Central Cordoba de Santiago': ['Central Córdoba'],
+  // Nombre acortado (a pedido, ver NOMBRES_EQUIPO_OVERRIDE en
+  // crearPartidos.js): desafios_mvp ya no guarda "de Santiago", así que la
+  // clave de acá tiene que quedar igual para seguir matcheando.
+  'Central Cordoba': ['Central Córdoba'],
   'Rosario Central': ['Rosario Central'],
   'Newells Old Boys': ["Newell's", 'Newells'],
   'Union Santa Fe': ['Unión'],
