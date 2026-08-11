@@ -342,11 +342,13 @@ async function obtenerEstadoFixture(fixtureId) {
 // ---------- Datos del estadio (capacidad/césped/año, usado por /cuotas ----------
 // junto con estadioVenueId de obtenerEstadoFixture) ----------
 // API-Football separa esto del fixture: /venues?id= trae name/city/country/
-// capacity/surface/image/address — acá solo se usan capacity, surface,
+// capacity/surface/image/address — antes solo se usaban capacity/surface/
 // country (el "año de fundación" NO lo entrega este endpoint pese a que a
 // veces se pide; si en el futuro aparece en la respuesta se puede sumar,
-// por ahora queda null). Se llama solo cuando falta alguno de estos datos
-// (ver cuotas.js), no en cada corrida, para no gastar cuota de más.
+// por ahora queda null). `imagen` se suma acá (a pedido: "agrega una foto
+// del estadio") — API-Football ya la traía en este mismo llamado, solo no
+// se estaba leyendo. Se llama solo cuando falta alguno de estos datos (ver
+// cuotas.js), no en cada corrida, para no gastar cuota de más.
 async function obtenerDatosVenue(venueId) {
   if (!venueId) return null;
   const resp = await fetch(`${BASE}/venues?id=${venueId}`, { headers });
@@ -357,6 +359,7 @@ async function obtenerDatosVenue(venueId) {
     pais: venue.country || null,
     capacidad: venue.capacity ?? null,
     cesped: venue.surface || null,
+    imagen: venue.image || null,
   };
 }
 
@@ -381,6 +384,53 @@ async function obtenerFixturesDeLiga(leagueId, season) {
     // señal de paginación cortada a mitad de camino.
     resultsApi: data?.results ?? null,
   };
+}
+
+// ---------- Historial de enfrentamientos (usado por /historial-enfrentamientos,
+// módulo "Historial de enfrentamientos" de la tarjeta de partido) ----------
+// /fixtures/headtohead?h2h=idA-idB trae TODOS los cruces históricos entre
+// dos equipos (cualquier competencia, cualquier temporada) — se pide con
+// status=FT-AET-PEN (solo terminados, nunca partidos futuros/pospuestos que
+// no aportan resultado) y se recorta acá a los últimos 5, más recientes
+// primero (la API los devuelve de más viejo a más nuevo).
+async function obtenerHeadToHead(idLocal, idVisita, limite = 5) {
+  if (!idLocal || !idVisita) return [];
+  const resp = await fetch(`${BASE}/fixtures/headtohead?h2h=${idLocal}-${idVisita}&status=FT-AET-PEN`, { headers });
+  const data = await resp.json();
+  const partidos = (data?.response || [])
+    .map((fx) => ({
+      fixtureId: fx.fixture?.id ?? null,
+      fecha: fx.fixture?.date || null,
+      competencia: fx.league?.name || null,
+      equipoLocal: fx.teams?.home?.name || null,
+      equipoVisita: fx.teams?.away?.name || null,
+      golesLocal: fx.goals?.home ?? null,
+      golesVisita: fx.goals?.away ?? null,
+    }))
+    .filter((p) => p.fecha)
+    .sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+  return partidos.slice(0, limite);
+}
+
+// ---------- Lesionados/suspendidos de un partido (usado por /lesionados,
+// módulo "Alineaciones" de la tarjeta de partido) ----------
+// /injuries?fixture=ID trae los jugadores que quedan afuera de ESE partido
+// puntual (lesión o suspensión), con el motivo tal como lo manda la API
+// ("Injury"/"Suspended" + un texto libre en "player.reason", ej. "Knee
+// Injury", "Red Card"). No hace falta pedir por equipo por separado: el
+// filtro por fixture ya trae a los dos equipos juntos.
+async function obtenerLesionados(fixtureId) {
+  if (!fixtureId) return [];
+  const resp = await fetch(`${BASE}/injuries?fixture=${fixtureId}`, { headers });
+  const data = await resp.json();
+  return (data?.response || []).map((r) => ({
+    jugadorId: r.player?.id ?? null,
+    jugador: r.player?.name || '',
+    tipo: r.player?.type || null, // "Missing Fixture" | "Questionable" (según la API)
+    motivo: r.player?.reason || null,
+    equipoId: r.team?.id ?? null,
+    equipo: r.team?.name || null,
+  }));
 }
 
 // ---------- Equipos de una liga (usado por /equipos, para el selector Tier A
@@ -454,6 +504,69 @@ async function obtenerPosicionesDeLiga(leagueId, season) {
     temporada: league.season,
     grupos,
   };
+}
+
+// ---------- Alineación PROBABLE (a pedido: "cuando el partido no ha
+// empezado, cargar aquí las alineaciones probables, la última alineación
+// que jugó el equipo") ----------
+// API-Football no publica la alineación oficial hasta ~1h antes del
+// partido (a veces más tarde). Mientras tanto, se usa como estimación la
+// alineación del ÚLTIMO partido jugado por el equipo. Dos llamadas: 1)
+// /fixtures?team=&last= para encontrar cuál fue ese último partido
+// (last=8 por el mismo motivo que obtenerFichaClub: puede haber uno en
+// vivo/programado mezclado que hay que descartar), 2) /fixtures?id= de
+// ESE fixture puntual para sacar su alineación (la primera llamada no
+// trae lineups). Se cachea por equipo: la alineación de un partido ya
+// jugado no cambia nunca.
+const CACHE_PROBABLE_MS = 6 * 60 * 60 * 1000; // 6 horas
+const cacheProbable = new Map(); // teamId -> { datos, expira }
+
+async function obtenerAlineacionProbable(teamId) {
+  const clave = String(teamId);
+  const enCache = cacheProbable.get(clave);
+  if (enCache && enCache.expira > Date.now()) return enCache.datos;
+
+  try {
+    const resp = await fetch(`${BASE}/fixtures?team=${teamId}&last=8`, { headers });
+    const data = await resp.json();
+    const ESTADOS_FINALIZADO = new Set(['FT', 'AET', 'PEN']);
+    const anteriores = (data?.response || [])
+      .filter((fx) => ESTADOS_FINALIZADO.has(fx.fixture?.status?.short))
+      .sort((a, b) => String(b.fixture?.date || '').localeCompare(String(a.fixture?.date || '')));
+    const ultimoFixtureId = anteriores[0]?.fixture?.id;
+    if (!ultimoFixtureId) return null;
+
+    const resp2 = await fetch(`${BASE}/fixtures?id=${ultimoFixtureId}`, { headers });
+    const data2 = await resp2.json();
+    const fx = data2?.response?.[0];
+    const lineup = (fx?.lineups || []).find((l) => l.team?.id === Number(teamId));
+    if (!lineup) return null;
+
+    const armarJugadorProbable = (x) => ({
+      id: x.player?.id ?? null,
+      nombre: x.player?.name || '',
+      numero: x.player?.number ?? null,
+      posicion: x.player?.pos || null,
+      grid: x.player?.grid || null,
+    });
+    const resultado = {
+      equipoId: lineup.team?.id ?? null,
+      equipo: lineup.team?.name || '',
+      escudo: lineup.team?.logo || null,
+      formacion: lineup.formation || null,
+      entrenador: lineup.coach?.name || null,
+      titulares: (lineup.startXI || []).map(armarJugadorProbable),
+      suplentes: (lineup.substitutes || []).map(armarJugadorProbable),
+      // Marca para que el frontend avise "alineación probable" en vez de
+      // dar a entender que es la oficial confirmada de este partido.
+      probable: true,
+    };
+    cacheProbable.set(clave, { datos: resultado, expira: Date.now() + CACHE_PROBABLE_MS });
+    return resultado;
+  } catch (e) {
+    console.error(`[obtenerAlineacionProbable] Error con el equipo ${teamId}:`, e);
+    return null;
+  }
 }
 
 // ---------- Detalle completo de un partido (usado por /detalle-partido) ----------
@@ -567,8 +680,24 @@ async function obtenerDetalleFixture(fixtureId) {
   } : null;
 
   const lineups = fx.lineups || [];
-  const alineacionLocal = armarAlineacion(lineups.find((l) => l.team?.id === idLocal));
-  const alineacionVisita = armarAlineacion(lineups.find((l) => l.team?.id !== idLocal));
+  let alineacionLocal = armarAlineacion(lineups.find((l) => l.team?.id === idLocal));
+  let alineacionVisita = armarAlineacion(lineups.find((l) => l.team?.id !== idLocal));
+
+  // Alineación PROBABLE (a pedido): si el partido todavía no arrancó y
+  // API-Football no publicó la alineación oficial todavía, se completa con
+  // la última alineación jugada por cada equipo (ver
+  // obtenerAlineacionProbable más arriba).
+  const idVisita = fx.teams?.away?.id;
+  const estadoCorto = fx.fixture?.status?.short || null;
+  const partidoNoArranco = ['NS', 'TBD', 'PST'].includes(estadoCorto);
+  if (partidoNoArranco) {
+    if (!alineacionLocal && idLocal) {
+      alineacionLocal = await obtenerAlineacionProbable(idLocal);
+    }
+    if (!alineacionVisita && idVisita) {
+      alineacionVisita = await obtenerAlineacionProbable(idVisita);
+    }
+  }
 
   const estadisticas = extraerEstadisticas(fx, idLocal);
 
@@ -800,4 +929,4 @@ async function obtenerFichaClub(teamId) {
   return ficha;
 }
 
-module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture, obtenerFichaJugador, obtenerFichaClub, obtenerPerfilBasicoJugador };
+module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture, obtenerFichaJugador, obtenerFichaClub, obtenerPerfilBasicoJugador, obtenerHeadToHead, obtenerLesionados };
