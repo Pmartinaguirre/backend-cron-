@@ -20,7 +20,25 @@ const BET_ID_MATCH_WINNER = 1;
 async function obtenerCuotas(fixtureId) {
   const resp = await fetch(`${BASE}/odds?fixture=${fixtureId}`, { headers });
   const data = await resp.json();
+
+  // DEBUG (a pedido: "no tiene cuota, es muy raro" en varios partidos de
+  // Libertadores/Sudamericana/Liga Profesional el mismo día — competencias
+  // que sí tienen casas de apuestas siempre): antes acá no se revisaba si
+  // la API devolvió un ERROR (límite de plan, cuota agotada, parámetro
+  // inválido...) — un error se veía IGUAL que "todavía no hay cuota
+  // cargada" (mismo `response: []`), así que un fallo sistemático de la
+  // API quedaba invisible, disfrazado de "esperando a que la casa publique
+  // la cuota". Esto imprime el motivo real en los logs de Render.
+  const errores = data?.errors;
+  const hayError = errores && (Array.isArray(errores) ? errores.length > 0 : Object.keys(errores).length > 0);
+  if (!resp.ok || hayError) {
+    console.error(`[obtenerCuotas] Fixture ${fixtureId}: la API devolvió un error — status ${resp.status}, errors:`, errores, '— resultados restantes hoy:', data?.['results'], '/', data?.paging?.total);
+  }
+
   const bookmakers = data?.response?.[0]?.bookmakers || [];
+  if (!hayError && bookmakers.length === 0) {
+    console.log(`[obtenerCuotas] Fixture ${fixtureId}: la API respondió OK pero sin bookmakers todavía (response.length=${(data?.response || []).length}).`);
+  }
 
   for (const bk of bookmakers) {
     const bet = (bk.bets || []).find((b) => b.id === BET_ID_MATCH_WINNER);
