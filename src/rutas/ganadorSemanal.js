@@ -17,14 +17,50 @@
 // el cron corre más de una vez.
 const { supabase } = require('../supabaseClient');
 
-// Mismo anclaje de semana que usa sementomvp.jsx (ANCLA_SEMANA_1) — martes
-// 21/jul 2026 00:00 hora Chile. Si cambia allá, hay que cambiarlo acá
-// también para que ambos coincidan en qué semana es cada fecha.
-const ANCLA_SEMANA_1 = new Date('2026-07-21T04:00:00.000Z').getTime();
+// Misma numeración de semana que usa sementomvp.jsx (ver comentario ahí) —
+// una semana futbolera (martes 00:00 Chile a martes siguiente 00:00) se
+// numera con el ISO-8601 de su LUNES DE CIERRE, no con un ancla fija. Si
+// cambia allá, hay que cambiarlo acá también para que ambos coincidan en
+// qué semana es cada fecha. La grilla de martes/lunes en sí (qué fecha
+// exacta abre y cierra cada semana) es la misma de siempre — el ancla
+// vieja (2026-07-21T04:00:00.000Z, martes 21/jul 00:00 Chile) cae justo en
+// esa misma grilla, así que rangoDeSemana(n) sigue devolviendo el rango de
+// fechas correcto para records ya guardados con el número viejo.
 const MS_SEMANA = 7 * 24 * 60 * 60 * 1000;
-const numeroSemanaDe = (t) => Math.floor((t - ANCLA_SEMANA_1) / MS_SEMANA) + 1;
+const ANCLA_MARTES_GRILLA = new Date('2026-07-21T04:00:00.000Z').getTime(); // cualquier martes de la grilla futbolera sirve de referencia
+function numeroSemanaISOde(fechaMediodiaUTC) {
+  const dUTC = new Date(fechaMediodiaUTC);
+  const diaISO = (dUTC.getUTCDay() + 6) % 7;
+  dUTC.setUTCDate(dUTC.getUTCDate() - diaISO + 3);
+  const primerJueves = new Date(Date.UTC(dUTC.getUTCFullYear(), 0, 4));
+  const diaPrimerJueves = (primerJueves.getUTCDay() + 6) % 7;
+  primerJueves.setUTCDate(primerJueves.getUTCDate() - diaPrimerJueves + 3);
+  return 1 + Math.round((dUTC - primerJueves) / (7 * 24 * 60 * 60 * 1000));
+}
+function martesAperturaMasCercano(t) {
+  // Redondea `t` hacia abajo al martes de apertura de la grilla futbolera
+  // (misma grilla de siempre, alineada con ANCLA_MARTES_GRILLA).
+  const semanasDesdeAncla = Math.floor((t - ANCLA_MARTES_GRILLA) / MS_SEMANA);
+  return ANCLA_MARTES_GRILLA + semanasDesdeAncla * MS_SEMANA;
+}
+const numeroSemanaDe = (t) => {
+  const inicio = martesAperturaMasCercano(t);
+  const lunesCierre = inicio + 6 * 24 * 60 * 60 * 1000 + 12 * 60 * 60 * 1000; // mediodía del lunes de cierre
+  return numeroSemanaISOde(lunesCierre);
+};
 const rangoDeSemana = (n) => {
-  const inicio = ANCLA_SEMANA_1 + (n - 1) * MS_SEMANA;
+  // Busca, dentro de la grilla ya alineada con ANCLA_MARTES_GRILLA, el
+  // martes cuyo número de semana ISO (lunes de cierre) es `n`.
+  let inicio = martesAperturaMasCercano(Date.now());
+  let intento = numeroSemanaDe(inicio);
+  // Ajuste lineal simple (la numeración ISO avanza de a 1 por semana casi
+  // siempre, salvo el corte de año — con desplazar semana a semana converge).
+  let guardia = 0;
+  while (intento !== n && guardia < 60) {
+    inicio += (n > intento ? 1 : -1) * MS_SEMANA;
+    intento = numeroSemanaDe(inicio);
+    guardia++;
+  }
   return { inicio, fin: inicio + MS_SEMANA };
 };
 
