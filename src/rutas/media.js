@@ -101,6 +101,30 @@ const FUENTES = [
     // adentro del partido (nunca antes del entretiempo).
     margenPublicacionMs: 105 * 60 * 1000,
   },
+  {
+    // COPA LIBERTADORES Y SUDAMERICANA (a pedido: "para los resúmenes de
+    // Copa Libertadores y Copa Sudamericana, buscar en ESPN Fans") — mismo
+    // canal genérico que la segunda fuente de Argentina de arriba, pero acá
+    // es la ÚNICA fuente de estas dos competencias (no hay un canal oficial
+    // de CONMEBOL dedicado configurado todavía), así que va en el campo
+    // PRINCIPAL (media_video_url, prioridad 1) en vez del campo secundario
+    // que usa ESPN Fans para Argentina — ahí sí conviven con la AFA.
+    // Entrada SEPARADA de la de arriba (mismo handle, mismo canal real) en
+    // vez de agregar estas dos competencias a la lista de la otra, porque
+    // campo/prioridad son distintos y ambos valores se leen del objeto
+    // `fuente`, no se pueden mezclar en una sola entrada.
+    nombre: 'ESPN Fans (Libertadores/Sudamericana)',
+    handle: '@ESPNFans',
+    competencias: ['Copa Libertadores', 'Copa Sudamericana'],
+    campo: 'media_video_url',
+    prioridad: 1,
+    // Mismos dos filtros que la fuente de arriba, y por el mismo motivo: es
+    // el mismo canal genérico (sube de todas las ligas/deportes), así que
+    // necesita el filtro de "resumen" en el título y la ventana de
+    // publicación DESPUÉS del kickoff, no antes.
+    requiereMarcadorResumen: true,
+    margenPublicacionMs: 105 * 60 * 1000,
+  },
 ];
 // Índice competencia -> LISTA de fuentes (a pedido: Argentina ahora tiene
 // dos). Antes era una fuente por competencia; con las dos de Argentina, se
