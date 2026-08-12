@@ -76,7 +76,7 @@ async function rutaGanadorSemanal(req, res) {
 
   const { data: grupos, error: errGrupos } = await supabase
     .from('salas_privadas_mvp')
-    .select('id, nombre');
+    .select('id, nombre, competencias');
   if (errGrupos) {
     return res.status(500).json({ error: errGrupos.message });
   }
@@ -114,14 +114,33 @@ async function rutaGanadorSemanal(req, res) {
 
       const { data: historial, error: errHist } = await supabase
         .from('diamantes_historial_mvp')
-        .select('usuario_id, monto, fecha_creacion')
+        .select('usuario_id, monto, fecha_creacion, desafio_id')
         .in('usuario_id', idsElegibles)
         .gte('fecha_creacion', new Date(inicio).toISOString())
         .lt('fecha_creacion', new Date(fin).toISOString());
       if (errHist) throw errHist;
 
+      // Mismo filtro por competencia del grupo que /ranking-grupo (ver nota
+      // grande ahí) — si no, el "Ganador semanal" podía salir premiado por
+      // diamantes ganados en una liga que ese grupo ni sigue.
+      const idsDesafiosReferenciados = [...new Set((historial || []).map((h) => h.desafio_id).filter(Boolean))];
+      const temaPorDesafio = {};
+      if (idsDesafiosReferenciados.length > 0) {
+        const { data: desafiosRef, error: errDesafiosRef } = await supabase
+          .from('desafios_mvp')
+          .select('id, tema')
+          .in('id', idsDesafiosReferenciados);
+        if (errDesafiosRef) throw errDesafiosRef;
+        (desafiosRef || []).forEach((d) => { temaPorDesafio[d.id] = d.tema; });
+      }
+      const competenciasGrupo = grupo.competencias || [];
+
       const sumaPorUsuario = {};
       (historial || []).forEach((h) => {
+        if (h.desafio_id && competenciasGrupo.length > 0) {
+          const tema = temaPorDesafio[h.desafio_id];
+          if (tema && !competenciasGrupo.includes(tema)) return;
+        }
         sumaPorUsuario[h.usuario_id] = (sumaPorUsuario[h.usuario_id] || 0) + (h.monto || 0);
       });
 
