@@ -15,10 +15,42 @@ const BASE = 'https://v3.football.api-sports.io';
 const headers = { 'x-apisports-key': API_FOOTBALL_KEY };
 
 async function rutaDiagnosticoPartido(req, res) {
+  // Atajo por fixtureId (a pedido): cuando ya sabemos el fixture_id_api
+  // puntual (ej. sacado de la tabla desafios_mvp) y no vale la pena
+  // adivinar competencia/fecha/liga — pega directo a /fixtures?id= y
+  // devuelve la respuesta CRUDA de árbitro/estadio para ESE fixture.
+  const fixtureId = req.query.fixtureId;
+  if (fixtureId) {
+    try {
+      const resp = await fetch(`${BASE}/fixtures?id=${fixtureId}`, { headers });
+      const data = await resp.json();
+      const fx = data?.response?.[0];
+      if (!fx) {
+        return res.json({ fixtureId, mensaje: `API-Football no devolvió ningún fixture con id ${fixtureId}.`, crudo: data });
+      }
+      return res.json({
+        fixtureId,
+        local: fx.teams?.home?.name || null,
+        visita: fx.teams?.away?.name || null,
+        liga: fx.league?.name || null,
+        ronda: fx.league?.round || null,
+        estado: fx.fixture?.status?.short || null,
+        fechaISO: fx.fixture?.date || null,
+        estadio: fx.fixture?.venue?.name || null,
+        estadioId: fx.fixture?.venue?.id || null,
+        estadioCiudad: fx.fixture?.venue?.city || null,
+        arbitro: fx.fixture?.referee || null,
+      });
+    } catch (e) {
+      console.error(`[/diagnostico-partido] Error con fixtureId ${fixtureId}:`, e);
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
   const competencia = req.query.competencia;
   const fecha = req.query.fecha; // YYYY-MM-DD
   if (!competencia || !fecha) {
-    return res.status(400).json({ error: 'Faltan parámetros: "competencia" y "fecha" (YYYY-MM-DD).' });
+    return res.status(400).json({ error: 'Faltan parámetros: "competencia" y "fecha" (YYYY-MM-DD), o "fixtureId".' });
   }
 
   const leagueId = leagueIdDeCompetencia(competencia);

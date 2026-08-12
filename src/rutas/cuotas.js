@@ -240,7 +240,20 @@ async function rutaCuotas(req, res) {
         //      puntual. Último recurso: solo cuando el fixture no trae
         //      NINGÚN nombre de estadio o la búsqueda por nombre no
         //      encontró nada.
-        if (partido.estadio_capacidad == null || partido.estadio_imagen == null) {
+        // RECHEQUEO POR NOMBRE DISTINTO (a pedido, bug reportado: "sigue sin
+        // cambiar el estadio de U. Católica" — una vez que capacidad/imagen
+        // quedaban guardadas (aunque fuera con el estadio EQUIVOCADO del
+        // fallback por equipo), esta sección nunca se volvía a ejecutar, así
+        // que un dato malo quedaba pegado para siempre aunque la API después
+        // sí publicara el estadio correcto del fixture puntual. Ahora,
+        // aunque ya haya capacidad/imagen guardada, si el fixture trae ESTA
+        // corrida un nombre de estadio distinto al que ya tenemos guardado,
+        // se reintenta igual — es la señal de que el partido se juega en un
+        // estadio distinto al que asumimos antes.
+        const nombreFixtureFresco = info?.estadioNombre || null;
+        const nombreDistinto = nombreFixtureFresco && partido.estadio
+          && nombreFixtureFresco.trim().toLowerCase() !== partido.estadio.trim().toLowerCase();
+        if (partido.estadio_capacidad == null || partido.estadio_imagen == null || nombreDistinto) {
           let venue = null;
           if (venueId) {
             venue = await obtenerDatosVenue(venueId);
