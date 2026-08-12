@@ -154,6 +154,7 @@ async function rutaCrearPartidos(req, res) {
     apiKeyUsada: claveApi ? `...${claveApi.slice(-4)} (${claveApi.length} caracteres)` : '(vacía)',
     porLiga: {},
     totalCreados: 0,
+    totalFechasCorregidas: 0,
     errores: [],
   };
 
@@ -239,13 +240,29 @@ async function rutaCrearPartidos(req, res) {
       }
 
       // Dedupe: qué fixture_id_api de ESTOS candidatos ya existen en la BD.
+      // Se trae también `id` y `fecha_expiracion` (antes solo fixture_id_api)
+      // — a pedido, bug reportado: "las fechas de la jornada 1 de LALIGA
+      // están mal, el Real Madrid no juega el 16 de agosto, juega el 26".
+      // CAUSA: este endpoint solo CREA fixtures nuevos — a uno que YA existe
+      // lo salta entero (ver "saltadosPorYaExistente" más abajo) sin volver
+      // a mirar si API-Football le cambió la fecha desde que se creó (pasa
+      // seguido: al principio de temporada la fecha/hora es provisional
+      // hasta que la liga confirma el fixture para TV). Y /vivo (el otro
+      // lugar que sí reprograma fechas) solo mira partidos cuya fecha
+      // GUARDADA ya pasó — un partido movido hacia ADELANTE (como este caso)
+      // nunca entra ahí hasta el día de la fecha vieja, y para entonces ya
+      // llevaba días mostrando mal en la app. Acá abajo se corrige eso: si
+      // la fecha que trae la API para un fixture ya existente no coincide
+      // con la guardada, se actualiza en el momento (ver filasActualizarFecha).
       const idsCandidatos = candidatos.map((fx) => fx.fixture.id);
       const { data: yaExistentes, error: errExistentes } = await supabase
         .from('desafios_mvp')
-        .select('fixture_id_api')
+        .select('id, fixture_id_api, fecha_expiracion')
         .in('fixture_id_api', idsCandidatos);
       if (errExistentes) throw errExistentes;
-      const idsYaExistentes = new Set((yaExistentes || []).map((d) => d.fixture_id_api));
+      const existentePorFixtureId = new Map((yaExistentes || []).map((d) => [d.fixture_id_api, d]));
+      const idsYaExistentes = new Set(existentePorFixtureId.keys());
+      const filasActualizarFecha = [];
 
       // Diagnóstico: nombres de ronda tal cual los devuelve API-Football
       // para esta liga en este lote — sirve para confirmar si el texto real
@@ -257,6 +274,24 @@ async function rutaCrearPartidos(req, res) {
       for (const fx of candidatos) {
         if (idsYaExistentes.has(fx.fixture.id)) {
           resumenLiga.saltadosPorYaExistente++;
+          // Re-sincronizar la fecha (a pedido, ver comentario grande más
+          // arriba): compara la fecha que trae LA API ahora contra la que
+          // quedó guardada al crear el partido. Margen de 60s (no un
+          // igual estricto) para no generar ruido de updates por
+          // redondeos de milisegundos entre llamadas.
+          const existente = existentePorFixtureId.get(fx.fixture.id);
+          const fechaApiMs = new Date(fx.fixture.date).getTime();
+          const fechaGuardadaMs = existente?.fecha_expiracion ? new Date(existente.fecha_expiracion).getTime() : null;
+          if (existente && Number.isFinite(fechaApiMs) && (fechaGuardadaMs == null || Math.abs(fechaApiMs - fechaGuardadaMs) > 60000)) {
+            const fechaISO = new Date(fx.fixture.date).toISOString();
+            filasActualizarFecha.push({
+              id: existente.id,
+              fecha_expiracion: fechaISO,
+              subtitulo: subtituloFecha(fechaISO),
+              tiempo: tiempoCorto(fechaISO),
+              fechaAnterior: existente.fecha_expiracion,
+            });
+          }
           continue;
         }
 
@@ -371,6 +406,29 @@ async function rutaCrearPartidos(req, res) {
         if (errInsert) throw errInsert;
         resumenLiga.creados = filasNuevas.length;
         resultadoGeneral.totalCreados += filasNuevas.length;
+      }
+
+      // Aplicar las correcciones de fecha detectadas (ver comentario grande
+      // más arriba) — un UPDATE por fila porque cada una cambia a un valor
+      // distinto (Supabase no tiene "bulk update con valores por fila" en una
+      // sola llamada). Se reportan ejemplos en la respuesta del cron para
+      // poder confirmar de un vistazo que de verdad corrigió algo real.
+      if (filasActualizarFecha.length > 0) {
+        resumenLiga.fechasCorregidas = filasActualizarFecha.length;
+        resumenLiga.ejemplosFechasCorregidas = filasActualizarFecha.slice(0, 5).map((f) => ({
+          id: f.id, antes: f.fechaAnterior, ahora: f.fecha_expiracion,
+        }));
+        for (const f of filasActualizarFecha) {
+          const { error: errUpdateFecha } = await supabase
+            .from('desafios_mvp')
+            .update({ fecha_expiracion: f.fecha_expiracion, subtitulo: f.subtitulo, tiempo: f.tiempo })
+            .eq('id', f.id);
+          if (errUpdateFecha) {
+            resultadoGeneral.errores.push({ competencia, error: `No se pudo corregir fecha del partido ${f.id}: ${errUpdateFecha.message}` });
+          } else {
+            resultadoGeneral.totalFechasCorregidas++;
+          }
+        }
       }
     } catch (e) {
       console.error(`[/crear-partidos] Error en liga "${competencia}":`, e);
