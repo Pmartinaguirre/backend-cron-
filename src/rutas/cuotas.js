@@ -118,9 +118,26 @@ async function rutaCuotas(req, res) {
   // falta el estadio (arreglable YA), después el resto por fecha más
   // próxima (cuota/árbitro, que solo se resuelve con el tiempo). Dentro de
   // cada grupo, más próximo primero.
+  // URGENTES (a pedido, bug reportado: "partido de HOY no tiene árbitro y
+  // todas las apps ya lo tienen" — la prioridad por estadio de arriba tuvo
+  // un efecto colateral: un partido de HOY que solo espera árbitro/cuota
+  // ahora podía quedar afuera de la corrida entera si había 15+ partidos
+  // más lejanos sin estadio, porque esos SIEMPRE pasaban primero sin
+  // importar la fecha. El árbitro en particular se confirma horas antes del
+  // partido — si se pierde la corrida justo antes del horario, se pierde el
+  // dato para todo el partido. Por eso los partidos dentro de las próximas
+  // 48h van SIEMPRE primero (les falte lo que les falte), y recién después
+  // se prioriza estadio-faltante sobre el resto.
+  const HORAS_VENTANA_URGENTE = 48;
+  const limiteUrgente = new Date(ahora.getTime() + HORAS_VENTANA_URGENTE * 60 * 60 * 1000);
   const faltaEstadio = (p) => p.estadio_capacidad == null || p.estadio_imagen == null;
   const horario = (p) => p.fecha_expiracion ? new Date(p.fecha_expiracion).getTime() : Infinity;
+  const esUrgente = (p) => horario(p) <= limiteUrgente.getTime();
   const todosLosPartidos = [...todosLosPartidosSinOrden].sort((a, b) => {
+    const ua = esUrgente(a) ? 0 : 1;
+    const ub = esUrgente(b) ? 0 : 1;
+    if (ua !== ub) return ua - ub;
+    if (ua === 0) return horario(a) - horario(b);
     const fa = faltaEstadio(a) ? 0 : 1;
     const fb = faltaEstadio(b) ? 0 : 1;
     if (fa !== fb) return fa - fb;
@@ -210,27 +227,28 @@ async function rutaCuotas(req, res) {
         // Football, se conecta a la misma API y tiene todo bien"):
         //   1) venueId del fixture — el más preciso cuando existe, pero en
         //      ligas fuera de las top-5 europeas casi nunca viene.
-        //   2) Estadio PROPIO del equipo local (/teams?id=, ver
-        //      obtenerVenueDeEquipo) — mismo criterio que usa Forza: es
-        //      dato fijo del club, no del partido puntual, así que está
-        //      completo para casi cualquier equipo. Éste es el fallback
-        //      que de verdad soluciona el problema (no depender del
-        //      fixture individual).
-        //   3) Búsqueda por nombre real de estadio (solo si la API dio un
-        //      nombre EN ESTA corrida, nunca el guardado de antes — bug
-        //      encontrado: buscar por una CIUDAD vieja guardada como
-        //      "estadio" —"Rio de Janeiro", "Buenos Aires"— devolvía un
-        //      estadio cualquiera de esa ciudad, de OTRO club, dato
-        //      incorrecto). Último recurso, solo si 1 y 2 no dieron nada.
+        //   2) Búsqueda por el nombre de estadio QUE TRAE ESTE FIXTURE
+        //      puntual (fresco, de esta corrida — nunca el guardado de
+        //      antes). Va ANTES que el estadio fijo del equipo porque un
+        //      partido puede jugarse en un estadio distinto al habitual del
+        //      equipo (bug encontrado: U. Católica vs Estudiantes jugado en
+        //      Claro Arena, no en su Santa Laura/San Carlos de siempre — el
+        //      fallback por equipo pisaba el dato correcto del fixture con
+        //      el estadio incorrecto "de siempre").
+        //   3) Estadio PROPIO del equipo local (/teams?id=, ver
+        //      obtenerVenueDeEquipo) — dato fijo del club, no del partido
+        //      puntual. Último recurso: solo cuando el fixture no trae
+        //      NINGÚN nombre de estadio o la búsqueda por nombre no
+        //      encontró nada.
         if (partido.estadio_capacidad == null || partido.estadio_imagen == null) {
           let venue = null;
           if (venueId) {
             venue = await obtenerDatosVenue(venueId);
-          } else if (partido.equipo_local_id) {
-            venue = await obtenerVenueDeEquipo(partido.equipo_local_id);
-          }
-          if (!venue && !venueId && info?.estadioNombre) {
+          } else if (info?.estadioNombre) {
             venue = await obtenerDatosVenuePorNombre(info.estadioNombre);
+          }
+          if (!venue && !venueId && partido.equipo_local_id) {
+            venue = await obtenerVenueDeEquipo(partido.equipo_local_id);
           }
           if (venue) {
             if (!venueId && venue.venueId != null) payload.estadio_venue_id = venue.venueId;
