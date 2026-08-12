@@ -187,7 +187,16 @@ async function rutaCuotas(req, res) {
         // (ver obtenerDatosVenuePorNombre). Si lo encuentra, además guarda
         // su id en estadio_venue_id para que la PRÓXIMA corrida ya pueda
         // usar obtenerDatosVenue directo, sin repetir la búsqueda.
-        const nombreEstadioParaBuscar = info?.estadioNombre || partido.estadio;
+        //
+        // OJO (bug encontrado con log real: partido de Vasco da Gama, la
+        // búsqueda usó "Rio de Janeiro" —la CIUDAD, guardada como
+        // `partido.estadio` por una versión vieja del código, antes de
+        // separar nombre/ciudad— y devolvió un estadio cualquiera de otro
+        // barrio, dato incorrecto y peor que no mostrar nada): por eso acá
+        // SOLO se busca por el nombre que la API devuelve EN ESTA MISMA
+        // corrida (`info.estadioNombre`) — nunca por `partido.estadio`
+        // guardado de antes, que puede ser en realidad una ciudad vieja.
+        const nombreEstadioParaBuscar = info?.estadioNombre || null;
         if (partido.estadio_capacidad == null || partido.estadio_imagen == null) {
           const venue = venueId
             ? await obtenerDatosVenue(venueId)
