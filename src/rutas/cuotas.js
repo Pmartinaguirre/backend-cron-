@@ -99,7 +99,33 @@ async function rutaCuotas(req, res) {
   // Merge sin duplicados (un partido puede caer en las dos listas).
   const porId = new Map();
   [...(partidosVentana || []), ...(partidosTBD || [])].forEach((p) => porId.set(p.id, p));
-  const todosLosPartidos = [...porId.values()];
+  const todosLosPartidosSinOrden = [...porId.values()];
+
+  // PRIORIDAD (a pedido, bug reportado: "no busca los estadios, se quedan
+  // trabados los mismos" — diagnosticado con logs reales: Sevilla, Celta
+  // Vigo, Colo Colo nunca aparecían ni intentados). Causa: antes esta lista
+  // solo se ordenaba por fecha más próxima, y el tope por corrida (ver
+  // abajo) se comía siempre los mismos 15 partidos más próximos — que
+  // resulta que son justo los que están esperando cuota_local/arbitro, un
+  // dato que la API todavía no publicó y que NO se arregla reintentando
+  // (se arregla solo, cuando se acerque la fecha). Esos partidos se quedan
+  // "incompletos" corrida tras corrida y ocupan el cupo para siempre, sin
+  // dejar lugar a partidos MÁS LEJANOS a los que solo les falta el
+  // ESTADIO — algo que sí se puede resolver ahora mismo, no depende de
+  // esperar nada.
+  //
+  // Por eso ahora se prioriza así: primero los partidos a los que les
+  // falta el estadio (arreglable YA), después el resto por fecha más
+  // próxima (cuota/árbitro, que solo se resuelve con el tiempo). Dentro de
+  // cada grupo, más próximo primero.
+  const faltaEstadio = (p) => p.estadio_capacidad == null || p.estadio_imagen == null;
+  const horario = (p) => p.fecha_expiracion ? new Date(p.fecha_expiracion).getTime() : Infinity;
+  const todosLosPartidos = [...todosLosPartidosSinOrden].sort((a, b) => {
+    const fa = faltaEstadio(a) ? 0 : 1;
+    const fb = faltaEstadio(b) ? 0 : 1;
+    if (fa !== fb) return fa - fb;
+    return horario(a) - horario(b);
+  });
 
   // TOPE POR CORRIDA (a pedido, bug reportado: cron-job.org viene fallando
   // por "tiempo de espera agotado" varios días seguidos, siempre justo en
