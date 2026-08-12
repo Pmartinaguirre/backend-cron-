@@ -18,7 +18,7 @@
 const DIAS_VENTANA_CUOTAS = Number(process.env.DIAS_VENTANA_CUOTAS) || 10;
 
 const { supabase } = require('../supabaseClient');
-const { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue } = require('../apiFootball');
+const { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerDatosVenuePorNombre } = require('../apiFootball');
 
 // HORARIOS "TBD" SIN CONFIRMAR (a pedido, bug reportado: Libertadores del
 // 11 y 18 de agosto ya tenían horario publicado en API-Football y la app
@@ -179,13 +179,27 @@ async function rutaCuotas(req, res) {
         // existiera esta columna nunca volvían a pedir /venues, así que se
         // quedaban sin imagen para siempre. Ahora también reintenta si falta
         // la imagen, aunque la capacidad ya esté.)
-        if ((partido.estadio_capacidad == null || partido.estadio_imagen == null) && venueId) {
-          const venue = await obtenerDatosVenue(venueId);
-          if (venue?.pais != null) payload.estadio_pais = venue.pais;
-          if (venue?.capacidad != null) payload.estadio_capacidad = venue.capacidad;
-          if (venue?.cesped != null) payload.estadio_cesped = venue.cesped;
-          // Foto del estadio (a pedido: "agrega una foto del estadio").
-          if (venue?.imagen != null) payload.estadio_imagen = venue.imagen;
+        //
+        // FALLBACK por nombre (a pedido, bug reportado: "no aparece ningún
+        // estadio" — diagnosticado que en ligas sudamericanas API-Football
+        // casi nunca manda venue.id, aunque sí manda el nombre): sin
+        // venueId, se intenta encontrar el estadio buscándolo por nombre
+        // (ver obtenerDatosVenuePorNombre). Si lo encuentra, además guarda
+        // su id en estadio_venue_id para que la PRÓXIMA corrida ya pueda
+        // usar obtenerDatosVenue directo, sin repetir la búsqueda.
+        const nombreEstadioParaBuscar = info?.estadioNombre || partido.estadio;
+        if (partido.estadio_capacidad == null || partido.estadio_imagen == null) {
+          const venue = venueId
+            ? await obtenerDatosVenue(venueId)
+            : await obtenerDatosVenuePorNombre(nombreEstadioParaBuscar);
+          if (venue) {
+            if (!venueId && venue.venueId != null) payload.estadio_venue_id = venue.venueId;
+            if (venue.pais != null) payload.estadio_pais = venue.pais;
+            if (venue.capacidad != null) payload.estadio_capacidad = venue.capacidad;
+            if (venue.cesped != null) payload.estadio_cesped = venue.cesped;
+            // Foto del estadio (a pedido: "agrega una foto del estadio").
+            if (venue.imagen != null) payload.estadio_imagen = venue.imagen;
+          }
         }
       }
       if (Object.keys(payload).length === 0) {

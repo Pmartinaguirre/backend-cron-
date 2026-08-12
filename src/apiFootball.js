@@ -381,6 +381,39 @@ async function obtenerDatosVenue(venueId) {
   };
 }
 
+// FALLBACK sin venueId (a pedido, bug reportado: "no aparece ningún
+// estadio en la columna estadio_imagen"): diagnosticado que, para la
+// mayoría de las ligas sudamericanas (Argentina, Chile, Brasil, Paraguay,
+// Ecuador...), API-Football manda el NOMBRE del estadio en el fixture
+// (fixture.venue.name) pero deja fixture.venue.id en null — sin ese id,
+// obtenerDatosVenue de arriba nunca se podía llamar, así que esos partidos
+// se quedaban sin capacidad/césped/foto para siempre, aunque sí tuvieran
+// el nombre del estadio guardado.
+//
+// Acá se intenta encontrar el venue buscándolo por NOMBRE con
+// /venues?search= (mismo endpoint /venues, pero por texto en vez de id).
+// No es infalible — nombres repetidos, tildes, "Estadio X" vs "X Arena"
+// pueden no calzar exacto — así que se toma el PRIMER resultado nomás:
+// mejor traer el dato con algo de margen de error que no traer nada. Si
+// encuentra un venue, se devuelve también su `id` para que cuotas.js lo
+// guarde en estadio_venue_id — así, en corridas futuras, ese partido ya
+// tiene id propio y puede usar obtenerDatosVenue directo, sin repetir esta
+// búsqueda por nombre.
+async function obtenerDatosVenuePorNombre(nombre) {
+  if (!nombre) return null;
+  const resp = await fetch(`${BASE}/venues?search=${encodeURIComponent(nombre)}`, { headers });
+  const data = await resp.json();
+  const venue = data?.response?.[0];
+  if (!venue) return null;
+  return {
+    venueId: venue.id ?? null,
+    pais: venue.country || null,
+    capacidad: venue.capacity ?? null,
+    cesped: venue.surface || null,
+    imagen: venue.image || null,
+  };
+}
+
 // ---------- Fixtures de una liga completa (usado por /crear-partidos) ----------
 // Devuelve también `errores`/`resultsRestantes` (además del array de
 // fixtures) porque un "revisados: 0" puede significar dos cosas muy
@@ -954,4 +987,4 @@ async function obtenerFichaClub(teamId) {
   return ficha;
 }
 
-module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture, obtenerFichaJugador, obtenerFichaClub, obtenerPerfilBasicoJugador, obtenerHeadToHead, obtenerLesionados };
+module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerDatosVenuePorNombre, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture, obtenerFichaJugador, obtenerFichaClub, obtenerPerfilBasicoJugador, obtenerHeadToHead, obtenerLesionados };
