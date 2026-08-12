@@ -56,21 +56,23 @@ async function resolverCat5(partido, golesLocal, golesVisita, penalesLocal, pena
   const cuotaGanadora = cuotaDelResultado(partido, signoGanador);
   const diamantesGanados = cuotaGanadora != null ? calcularDiamantesPorCuota(cuotaGanadora) : DIAMANTES_BASE_SIN_CUOTA;
 
+  // Pago atómico (a pedido, bug reportado: "no me figuran todos los
+  // diamantes que he ganado"): antes esto era SELECT puntos → sumar en JS →
+  // UPDATE, que puede perder un pago si dos se procesan cerca en el tiempo
+  // para el mismo jugador (el segundo pisa el resultado del primero sin
+  // sumarlo). pagar_diamantes_cron hace el UPDATE + el INSERT en el
+  // historial como una sola operación atómica en la base — ver
+  // pagar_diamantes_atomico_e_historial.sql.
   const usuariosUnicos = [...new Set((ganadores || []).map((g) => g.usuario_id))];
   for (const uid of usuariosUnicos) {
-    const { data: u } = await supabase.from('usuarios').select('puntos').eq('id', uid).single();
-    if (u) {
-      await supabase.from('usuarios').update({ puntos: (u.puntos || 0) + diamantesGanados }).eq('id', uid);
-      // Historial de diamantes (a pedido: "Ganador semanal" — ver
-      // agregar_ganador_semanal_y_historial_diamantes.sql y
-      // src/rutas/ganadorSemanal.js). Registra CADA pago con fecha, para
-      // poder sumar cuánto ganó cada jugador DENTRO de una semana/grupo.
-      await supabase.from('diamantes_historial_mvp').insert({
-        usuario_id: uid,
-        monto: diamantesGanados,
-        desafio_id: partido.id,
-        motivo: 'cat5',
-      });
+    const { error: errPago } = await supabase.rpc('pagar_diamantes_cron', {
+      p_usuario: uid,
+      p_monto: diamantesGanados,
+      p_desafio: partido.id,
+      p_motivo: 'cat5',
+    });
+    if (errPago) {
+      console.error(`[/resolver] Error pagando diamantes (cat5) a ${uid}:`, errPago.message);
     }
   }
   return { tipo: 'cat5', respuestaGanadora, diamantesGanados, ganadores: usuariosUnicos.length };
@@ -107,16 +109,16 @@ async function resolverCat4(partido, golesLocal, golesVisita, penalesLocal, pena
       ? calcularDiamantesCat4(marcador[0], marcador[1], golesLocal, golesVisita, partido)
       : calcularDiamantesCat4PorDireccion(signoDeResultadoLEV(partido.equipo_local, partido.equipo_visitante, p.eleccion), signoReal, partido);
     if (monto <= 0) continue;
-    const { data: u } = await supabase.from('usuarios').select('puntos').eq('id', p.usuario_id).single();
-    if (u) {
-      await supabase.from('usuarios').update({ puntos: (u.puntos || 0) + monto }).eq('id', p.usuario_id);
-      // Historial de diamantes (ver nota igual en resolverCat5).
-      await supabase.from('diamantes_historial_mvp').insert({
-        usuario_id: p.usuario_id,
-        monto,
-        desafio_id: partido.id,
-        motivo: 'cat4',
-      });
+    // Pago atómico (ver nota igual en resolverCat5).
+    const { error: errPago } = await supabase.rpc('pagar_diamantes_cron', {
+      p_usuario: p.usuario_id,
+      p_monto: monto,
+      p_desafio: partido.id,
+      p_motivo: 'cat4',
+    });
+    if (errPago) {
+      console.error(`[/resolver] Error pagando diamantes (cat4) a ${p.usuario_id}:`, errPago.message);
+    } else {
       pagados++;
     }
   }
