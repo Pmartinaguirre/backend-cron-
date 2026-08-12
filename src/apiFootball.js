@@ -403,8 +403,25 @@ async function obtenerDatosVenuePorNombre(nombre) {
   if (!nombre) return null;
   const resp = await fetch(`${BASE}/venues?search=${encodeURIComponent(nombre)}`, { headers });
   const data = await resp.json();
+  // DEBUG (a pedido, bug reportado: "no actualiza bien los estadios" — los
+  // mismos partidos se quedaban trabados corrida tras corrida sin avisar
+  // por qué): antes, si /venues?search= no encontraba nada o la API
+  // devolvía un error (límite de plan, rate-limit, parámetro mal armado),
+  // acá se devolvía `null` en silencio — indistinguible entre "este
+  // estadio no existe en API-Football" y "algo falló al preguntar". Estos
+  // logs (visibles en Render → Logs) permiten diferenciar los dos casos.
+  const errores = data?.errors;
+  const hayError = errores && (Array.isArray(errores) ? errores.length > 0 : Object.keys(errores).length > 0);
+  if (!resp.ok || hayError) {
+    console.error(`[obtenerDatosVenuePorNombre] Búsqueda "${nombre}": la API devolvió un error — status ${resp.status}, errors:`, errores);
+    return null;
+  }
   const venue = data?.response?.[0];
-  if (!venue) return null;
+  if (!venue) {
+    console.log(`[obtenerDatosVenuePorNombre] Búsqueda "${nombre}": sin resultados (results=${data?.results ?? 0}).`);
+    return null;
+  }
+  console.log(`[obtenerDatosVenuePorNombre] Búsqueda "${nombre}" -> encontrado "${venue.name}" (id ${venue.id}, ${venue.city || 'sin ciudad'}).`);
   return {
     venueId: venue.id ?? null,
     pais: venue.country || null,
