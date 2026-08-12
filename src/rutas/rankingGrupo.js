@@ -25,7 +25,7 @@ async function rutaRankingGrupo(req, res) {
 
   const { data: sala, error: errSala } = await supabase
     .from('salas_privadas_mvp')
-    .select('id, nombre, admin_id, juego_activo, fecha_inicio_conteo, fecha_fin_conteo')
+    .select('id, nombre, admin_id, juego_activo, fecha_inicio_conteo, fecha_fin_conteo, competencias')
     .eq('id', salaId)
     .single();
   if (errSala || !sala) {
@@ -85,7 +85,7 @@ async function rutaRankingGrupo(req, res) {
   const inicioMasTemprano = Object.values(inicioPorUsuario).sort()[0];
   const { data: historial, error: errHist } = await supabase
     .from('diamantes_historial_mvp')
-    .select('usuario_id, monto, fecha_creacion')
+    .select('usuario_id, monto, fecha_creacion, desafio_id')
     .in('usuario_id', idsUnicos)
     .gte('fecha_creacion', inicioMasTemprano)
     .lte('fecha_creacion', finVentana);
@@ -93,13 +93,45 @@ async function rutaRankingGrupo(req, res) {
     return res.status(500).json({ error: errHist.message });
   }
 
+  // FILTRO POR COMPETENCIA DEL GRUPO (a pedido, bug reportado: "creé un
+  // grupo hoy que juega solo la liga chilena y ya tengo 5 puntos, sin que
+  // se haya jugado ningún partido de esa liga todavía"). Antes esto sumaba
+  // TODO el historial de diamantes del jugador dentro de la ventana de
+  // fechas, sin mirar a qué competencia pertenecía cada pago — un diamante
+  // ganado hoy en OTRA liga (o en otro grupo) contaba igual acá, con tal de
+  // que la fecha cayera dentro de la ventana. Ahora, si el grupo tiene una
+  // lista de competencias configurada (`salas_privadas_mvp.competencias`),
+  // un pago solo cuenta si:
+  //   a) no está atado a ningún partido (desafio_id NULL — ej. un diamante
+  //      otorgado a mano por un admin sin partido asociado), o
+  //   b) el partido pertenece a una de las competencias del grupo.
+  const idsDesafiosReferenciados = [...new Set((historial || []).map((h) => h.desafio_id).filter(Boolean))];
+  const temaPorDesafio = {};
+  if (idsDesafiosReferenciados.length > 0) {
+    const { data: desafiosRef, error: errDesafiosRef } = await supabase
+      .from('desafios_mvp')
+      .select('id, tema')
+      .in('id', idsDesafiosReferenciados);
+    if (errDesafiosRef) {
+      return res.status(500).json({ error: errDesafiosRef.message });
+    }
+    (desafiosRef || []).forEach((d) => { temaPorDesafio[d.id] = d.tema; });
+  }
+  const competenciasGrupo = sala.competencias || [];
+
   const sumaPorUsuario = {};
   idsUnicos.forEach((id) => { sumaPorUsuario[id] = 0; });
   (historial || []).forEach((h) => {
     const desde = inicioPorUsuario[h.usuario_id];
-    if (desde && h.fecha_creacion >= desde) {
-      sumaPorUsuario[h.usuario_id] = (sumaPorUsuario[h.usuario_id] || 0) + (h.monto || 0);
+    if (!desde || h.fecha_creacion < desde) return;
+    if (h.desafio_id && competenciasGrupo.length > 0) {
+      const tema = temaPorDesafio[h.desafio_id];
+      // Si el desafío referenciado no tiene tema reconocido, se cuenta igual
+      // (mejor sumar de más un caso raro que restarle diamantes reales a un
+      // jugador por un dato faltante).
+      if (tema && !competenciasGrupo.includes(tema)) return;
     }
+    sumaPorUsuario[h.usuario_id] = (sumaPorUsuario[h.usuario_id] || 0) + (h.monto || 0);
   });
 
   const jugadores = idsUnicos
