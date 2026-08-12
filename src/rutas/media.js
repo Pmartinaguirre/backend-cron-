@@ -356,7 +356,13 @@ const ALIASES_POR_EQUIPO = {
   'Defensa Y Justicia': ['Defensa y Justicia', 'Defensa'],
   'Sarmiento Junin': ['Sarmiento'],
   'Atletico Tucuman': ['Atl. Tucumán', 'Atlético Tucumán'],
-  'Independ. Rivadavia': ['Ind. Rivadavia', 'Independiente Rivadavia'],
+  // "Rivadavia" a secas (a pedido, título real confirmado en ESPN Fans para
+  // Copa Libertadores: "... | Fluminense 0-0 Rivadavia | RESUMEN") — en
+  // partidos internacionales el canal lo acorta más todavía que en la AFA
+  // (ni "Ind." le pone), probablemente para no alargar el título contra el
+  // nombre del rival extranjero. Sin riesgo de choque: es el único club de
+  // la base que se apellida así.
+  'Independ. Rivadavia': ['Ind. Rivadavia', 'Independiente Rivadavia', 'Rivadavia'],
   'Deportivo Riestra': ['Deportivo Riestra'],
   'Estudiantes de Rio Cuarto': ['Estudiantes (RC)'],
   'Aldosivi': ['Aldosivi'],
@@ -423,26 +429,43 @@ function aliasApareceEnTitulo(alias, tituloNormalizado) {
 // del otro. Así "Boca" (alias) + "Fluminense" (nombre completo, que si
 // aparece calza igual) matchean juntos sin que ninguno de los dos frene al
 // otro.
-function equipoApareceEnTitulo(nombreEquipo, tituloNormalizado) {
+// `modoLaxo` (a pedido: "el marcador siempre es X-X, siempre está la
+// palabra resumen, y si ya está 'Fluminense 0-0 Rivadavia RESUMEN' ya era
+// suficiente para encontrarlo, además está el filtro de fecha + competencia
+// — no es tan difícil"): con el marcador REAL confirmado en el título (no
+// cualquier par de números — el mismo resultado oficial que ya está cargado
+// en la base) MÁS la palabra "resumen" MÁS la ventana de fecha MÁS la
+// competencia ya filtrados, esa combinación alcanza de sobra como prueba de
+// que es el partido correcto — no hace falta además exigir TODAS las
+// palabras del nombre completo del equipo. En modoLaxo, alcanza con
+// CUALQUIER palabra significativa (no todas), así un club sin alias
+// cargado y acortado de cualquier forma en el título (ej. "Rivadavia" en
+// vez de "Independiente Rivadavia") igual matchea sin tener que agregar a
+// mano cada variante posible.
+function equipoApareceEnTitulo(nombreEquipo, tituloNormalizado, modoLaxo = false) {
   const aliases = ALIASES_POR_EQUIPO[nombreEquipo];
   if (aliases && aliases.some((a) => aliasApareceEnTitulo(a, tituloNormalizado))) return true;
   const nombreCompleto = normalizar(nombreEquipo);
   if (nombreCompleto && tituloNormalizado.includes(nombreCompleto)) return true;
   const palabras = palabrasSignificativas(nombreEquipo);
-  return palabras.length > 0 && palabras.every((p) => tituloNormalizado.includes(p));
+  if (palabras.length === 0) return false;
+  if (palabras.every((p) => tituloNormalizado.includes(p))) return true;
+  return modoLaxo && palabras.some((p) => tituloNormalizado.includes(p));
 }
 
 // Busca el primer video candidato donde AMBOS equipos aparecen (cada uno por
-// su propio criterio, ver equipoApareceEnTitulo) y el marcador (si hay)
-// coincide. Reemplaza la cadena vieja de tres intentos separados
-// (alias-para-los-dos, nombre-completo-para-los-dos,
-// palabras-para-los-dos) — este único paso ya cubre esos tres casos Y las
-// combinaciones mixtas (uno con alias, el otro sin).
-function buscarPorEquipos(equipoLocal, equipoVisitante, candidatosVideos, marcadorCoincide) {
+// su propio criterio, ver equipoApareceEnTitulo) y el marcador coincide.
+// `modoLaxo` se evalúa POR VIDEO (no global): solo se activa para un
+// candidato puntual cuando ese título trae el marcador oficial REAL
+// confirmado (`marcadorConfirmado`) — si el título no tiene número
+// reconocible, o tiene otro resultado, ese candidato sigue exigiendo el
+// nombre completo/todas las palabras como siempre, sin relajar nada.
+function buscarPorEquipos(equipoLocal, equipoVisitante, candidatosVideos, { marcadorCoincide, marcadorConfirmado, permitirLaxo }) {
   return candidatosVideos.find((v) => {
     const titulo = normalizar(v.titulo);
-    return equipoApareceEnTitulo(equipoLocal, titulo)
-      && equipoApareceEnTitulo(equipoVisitante, titulo)
+    const laxo = !!permitirLaxo && marcadorConfirmado(v.titulo);
+    return equipoApareceEnTitulo(equipoLocal, titulo, laxo)
+      && equipoApareceEnTitulo(equipoVisitante, titulo, laxo)
       && marcadorCoincide(v.titulo);
   }) || null;
 }
@@ -506,13 +529,36 @@ function buscarVideoResumenEnLista(equipoLocal, equipoVisitante, fechaPartidoISO
     return (a === x && b === y) || (a === y && b === x);
   };
 
+  // Distinto de marcadorCoincide (que deja pasar cuando NO hay marcador
+  // reconocible, "mejor no perder el video"): esto es estricto a propósito
+  // — true SOLO cuando el título trae de verdad el marcador oficial exacto
+  // (formato "X-X", ver extraerMarcadorDeTitulo). Es la señal fuerte que
+  // habilita el modoLaxo del nombre del equipo (ver buscarPorEquipos):
+  // marcador real + "resumen" en el título + ventana de fecha + competencia
+  // ya filtrada es prueba de sobra, no hace falta además el nombre completo.
+  const marcadorConfirmado = (titulo) => {
+    if (!golesOficiales) return false;
+    const extraido = extraerMarcadorDeTitulo(titulo);
+    if (!extraido) return false;
+    const [a, b] = extraido;
+    const [x, y] = golesOficiales;
+    return (a === x && b === y) || (a === y && b === x);
+  };
+
   // Para cada equipo, POR SEPARADO: alias del canal si está en la tabla,
   // si no nombre completo tal cual está en la base, si no todas las
   // palabras significativas del nombre (ver equipoApareceEnTitulo) — así un
   // partido con un equipo aliasado (ej. "Boca" en Argentina/Chile) y el
   // rival sin alias (ej. un club brasileño de Libertadores/Sudamericana)
-  // matchea igual, en vez de necesitar que LOS DOS estén en la tabla.
-  const match = buscarPorEquipos(equipoLocal, equipoVisitante, videosParaNombres, marcadorCoincide);
+  // matchea igual, en vez de necesitar que LOS DOS estén en la tabla. Con
+  // marcador real confirmado (modoLaxo, solo en canales genéricos que ya
+  // exigen "resumen" en el título) alcanza con CUALQUIER palabra
+  // significativa del nombre, no todas.
+  const match = buscarPorEquipos(equipoLocal, equipoVisitante, videosParaNombres, {
+    marcadorCoincide,
+    marcadorConfirmado,
+    permitirLaxo: requiereMarcadorResumen,
+  });
 
   return { videoId: match?.videoId || null, candidatos };
 }
