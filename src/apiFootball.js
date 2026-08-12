@@ -431,6 +431,54 @@ async function obtenerDatosVenuePorNombre(nombre) {
   };
 }
 
+// ---------- Estadio PROPIO del equipo (usado por /cuotas como fallback
+// principal, a pedido: "mira como Forza Football lo hace, se conecta a la
+// misma API y tiene todos los estadios bien") ----------
+//
+// La diferencia clave: Forza (y cualquier app parecida) no depende de que
+// CADA fixture puntual traiga venue.id cargado — usa el estadio FIJO del
+// equipo, que en API-Football vive en la ficha del club (/teams?id=), no
+// en el partido. Ese dato es información de club (nombre, dirección,
+// capacidad, césped, foto), no algo que dependa de que la organización
+// confirme partido por partido — por eso está completo para prácticamente
+// cualquier equipo, a diferencia de fixture.venue (que en ligas fuera de
+// las top-5 europeas suele llegar sin id, y a veces sin nombre siquiera,
+// ver obtenerEstadoFixture más arriba).
+//
+// Se pide el estadio del equipo LOCAL porque, salvo alguna final/copa a
+// sede neutral (caso borde, poco frecuente en las ligas que trackeamos),
+// el partido se juega en SU cancha.
+async function obtenerVenueDeEquipo(teamId) {
+  if (!teamId) return null;
+  const resp = await fetch(`${BASE}/teams?id=${teamId}`, { headers });
+  const data = await resp.json();
+  const errores = data?.errors;
+  const hayError = errores && (Array.isArray(errores) ? errores.length > 0 : Object.keys(errores).length > 0);
+  if (!resp.ok || hayError) {
+    console.error(`[obtenerVenueDeEquipo] Equipo ${teamId}: la API devolvió un error — status ${resp.status}, errors:`, errores);
+    return null;
+  }
+  const entrada = data?.response?.[0];
+  const venue = entrada?.venue;
+  if (!venue || !venue.id) {
+    console.log(`[obtenerVenueDeEquipo] Equipo ${teamId} (${entrada?.team?.name || '?'}): la ficha del equipo no tiene estadio cargado.`);
+    return null;
+  }
+  console.log(`[obtenerVenueDeEquipo] Equipo ${teamId} (${entrada?.team?.name || '?'}) -> estadio "${venue.name}" (id ${venue.id}).`);
+  return {
+    venueId: venue.id,
+    nombre: venue.name || null,
+    ciudad: venue.city || null,
+    // /teams no separa el país del venue; el país del CLUB es la mejor
+    // aproximación disponible (su estadio casi siempre está en el mismo
+    // país, salvo casos rarísimos).
+    pais: entrada?.team?.country || null,
+    capacidad: venue.capacity ?? null,
+    cesped: venue.surface || null,
+    imagen: venue.image || null,
+  };
+}
+
 // ---------- Fixtures de una liga completa (usado por /crear-partidos) ----------
 // Devuelve también `errores`/`resultsRestantes` (además del array de
 // fixtures) porque un "revisados: 0" puede significar dos cosas muy
@@ -1004,4 +1052,4 @@ async function obtenerFichaClub(teamId) {
   return ficha;
 }
 
-module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerDatosVenuePorNombre, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture, obtenerFichaJugador, obtenerFichaClub, obtenerPerfilBasicoJugador, obtenerHeadToHead, obtenerLesionados };
+module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerDatosVenuePorNombre, obtenerVenueDeEquipo, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture, obtenerFichaJugador, obtenerFichaClub, obtenerPerfilBasicoJugador, obtenerHeadToHead, obtenerLesionados };

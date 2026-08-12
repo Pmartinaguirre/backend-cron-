@@ -18,7 +18,7 @@
 const DIAS_VENTANA_CUOTAS = Number(process.env.DIAS_VENTANA_CUOTAS) || 10;
 
 const { supabase } = require('../supabaseClient');
-const { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerDatosVenuePorNombre } = require('../apiFootball');
+const { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerDatosVenuePorNombre, obtenerVenueDeEquipo } = require('../apiFootball');
 
 // HORARIOS "TBD" SIN CONFIRMAR (a pedido, bug reportado: Libertadores del
 // 11 y 18 de agosto ya tenían horario publicado en API-Football y la app
@@ -49,7 +49,7 @@ async function rutaCuotas(req, res) {
   const limiteTBD = new Date(ahora);
   limiteTBD.setDate(limiteTBD.getDate() + DIAS_VENTANA_TBD);
 
-  const columnas = 'id, pregunta, fixture_id_api, categoria, fecha_expiracion, estado_partido, cuota_local, estadio, estadio_ciudad, estadio_pais, estadio_capacidad, estadio_cesped, estadio_venue_id, estadio_imagen, arbitro, arbitro_pais';
+  const columnas = 'id, pregunta, fixture_id_api, categoria, fecha_expiracion, estado_partido, cuota_local, estadio, estadio_ciudad, estadio_pais, estadio_capacidad, estadio_cesped, estadio_venue_id, estadio_imagen, arbitro, arbitro_pais, equipo_local_id';
 
   // Estadio + árbitro (a pedido, "Información del partido" en la app): se
   // traen JUNTO con las cuotas, en la misma corrida — mismo criterio que
@@ -180,29 +180,40 @@ async function rutaCuotas(req, res) {
         // quedaban sin imagen para siempre. Ahora también reintenta si falta
         // la imagen, aunque la capacidad ya esté.)
         //
-        // FALLBACK por nombre (a pedido, bug reportado: "no aparece ningún
-        // estadio" — diagnosticado que en ligas sudamericanas API-Football
-        // casi nunca manda venue.id, aunque sí manda el nombre): sin
-        // venueId, se intenta encontrar el estadio buscándolo por nombre
-        // (ver obtenerDatosVenuePorNombre). Si lo encuentra, además guarda
-        // su id en estadio_venue_id para que la PRÓXIMA corrida ya pueda
-        // usar obtenerDatosVenue directo, sin repetir la búsqueda.
-        //
-        // OJO (bug encontrado con log real: partido de Vasco da Gama, la
-        // búsqueda usó "Rio de Janeiro" —la CIUDAD, guardada como
-        // `partido.estadio` por una versión vieja del código, antes de
-        // separar nombre/ciudad— y devolvió un estadio cualquiera de otro
-        // barrio, dato incorrecto y peor que no mostrar nada): por eso acá
-        // SOLO se busca por el nombre que la API devuelve EN ESTA MISMA
-        // corrida (`info.estadioNombre`) — nunca por `partido.estadio`
-        // guardado de antes, que puede ser en realidad una ciudad vieja.
-        const nombreEstadioParaBuscar = info?.estadioNombre || null;
+        // TRES INTENTOS EN ORDEN (a pedido: "mira cómo lo hace Forza
+        // Football, se conecta a la misma API y tiene todo bien"):
+        //   1) venueId del fixture — el más preciso cuando existe, pero en
+        //      ligas fuera de las top-5 europeas casi nunca viene.
+        //   2) Estadio PROPIO del equipo local (/teams?id=, ver
+        //      obtenerVenueDeEquipo) — mismo criterio que usa Forza: es
+        //      dato fijo del club, no del partido puntual, así que está
+        //      completo para casi cualquier equipo. Éste es el fallback
+        //      que de verdad soluciona el problema (no depender del
+        //      fixture individual).
+        //   3) Búsqueda por nombre real de estadio (solo si la API dio un
+        //      nombre EN ESTA corrida, nunca el guardado de antes — bug
+        //      encontrado: buscar por una CIUDAD vieja guardada como
+        //      "estadio" —"Rio de Janeiro", "Buenos Aires"— devolvía un
+        //      estadio cualquiera de esa ciudad, de OTRO club, dato
+        //      incorrecto). Último recurso, solo si 1 y 2 no dieron nada.
         if (partido.estadio_capacidad == null || partido.estadio_imagen == null) {
-          const venue = venueId
-            ? await obtenerDatosVenue(venueId)
-            : await obtenerDatosVenuePorNombre(nombreEstadioParaBuscar);
+          let venue = null;
+          if (venueId) {
+            venue = await obtenerDatosVenue(venueId);
+          } else if (partido.equipo_local_id) {
+            venue = await obtenerVenueDeEquipo(partido.equipo_local_id);
+          }
+          if (!venue && !venueId && info?.estadioNombre) {
+            venue = await obtenerDatosVenuePorNombre(info.estadioNombre);
+          }
           if (venue) {
             if (!venueId && venue.venueId != null) payload.estadio_venue_id = venue.venueId;
+            // Nombre/ciudad del estadio (a pedido): si el fixture no traía
+            // nada (ej. RB Bragantino, estadio quedaba null entero), el
+            // estadio del equipo también sirve para completar ESTOS
+            // campos, no solo capacidad/foto.
+            if (!payload.estadio && venue.nombre != null) payload.estadio = venue.nombre;
+            if (!payload.estadio_ciudad && venue.ciudad != null) payload.estadio_ciudad = venue.ciudad;
             if (venue.pais != null) payload.estadio_pais = venue.pais;
             if (venue.capacidad != null) payload.estadio_capacidad = venue.capacidad;
             if (venue.cesped != null) payload.estadio_cesped = venue.cesped;
