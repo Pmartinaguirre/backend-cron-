@@ -418,11 +418,23 @@ async function rutaCrearPartidos(req, res) {
         resumenLiga.ejemplosFechasCorregidas = filasActualizarFecha.slice(0, 5).map((f) => ({
           id: f.id, antes: f.fechaAnterior, ahora: f.fecha_expiracion,
         }));
-        for (const f of filasActualizarFecha) {
-          const { error: errUpdateFecha } = await supabase
+        // En paralelo (Promise.all), no una por una (a pedido, timeout del
+        // cron): son updates independientes (cada uno a un `id` distinto), así
+        // que esperarlos de a uno en un for...await sumaba un round-trip a
+        // Supabase completo por cada fecha corregida — con varias ligas
+        // corrigiendo varias fechas a la vez (ej. la primera corrida después
+        // de este fix, con toda la Jornada 1 europea reprogramada) eso solo
+        // alcanzaba para empujar la corrida entera por encima de los ~30s de
+        // timeout que usa cron-job.org. Lanzarlos todos juntos tarda lo que
+        // tarda EL MÁS LENTO de ellos, no la suma de todos.
+        const resultados = await Promise.all(filasActualizarFecha.map((f) =>
+          supabase
             .from('desafios_mvp')
             .update({ fecha_expiracion: f.fecha_expiracion, subtitulo: f.subtitulo, tiempo: f.tiempo })
-            .eq('id', f.id);
+            .eq('id', f.id)
+            .then(({ error }) => ({ f, error }))
+        ));
+        for (const { f, error: errUpdateFecha } of resultados) {
           if (errUpdateFecha) {
             resultadoGeneral.errores.push({ competencia, error: `No se pudo corregir fecha del partido ${f.id}: ${errUpdateFecha.message}` });
           } else {
