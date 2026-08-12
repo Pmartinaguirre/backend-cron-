@@ -392,9 +392,43 @@ async function obtenerDatosVenue(venueId) {
 //
 // Acá se intenta encontrar el venue buscándolo por NOMBRE con
 // /venues?search= (mismo endpoint /venues, pero por texto en vez de id).
+//
+// VALIDACIÓN DE MATCH (a pedido, bug reportado: "el estadio de Palmeiras vs
+// Cerro Porteño tiene el nombre bien pero la foto carga incorrectamente" —
+// venue id 258, "Estadio Nu Bank Parque"): antes se tomaba el PRIMER
+// resultado de /venues?search= a ciegas, sin comprobar que de verdad fuera
+// el mismo estadio. Como el NOMBRE que se muestra en la app viene del
+// fixture (no de este resultado — ver cuotas.js, `venue.nombre` de acá casi
+// nunca se usa para pisar el nombre), un match flojo/equivocado quedaba
+// invisible: el nombre en pantalla seguía siendo el correcto, pero la
+// capacidad/césped/FOTO que sí vienen de este resultado eran de OTRO
+// estadio. Ahora se exige que el nombre devuelto por la API comparta
+// alguna palabra significativa (4+ letras, sin tildes) con lo buscado — si
+// no hay ninguna coincidencia, se descarta el resultado en vez de usarlo
+// "total, algo es mejor que nada": mejor no traer capacidad/foto que traer
+// la de un estadio distinto.
+function normalizarNombreEstadio(s) {
+  return String(s || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+function palabrasSignificativasEstadio(nombre) {
+  return normalizarNombreEstadio(nombre)
+    .split(' ')
+    .filter((p) => p.length >= 4 && !['estadio', 'stadium', 'arena', 'municipal', 'parque', 'park'].includes(p));
+}
+function nombresDeEstadioCalzan(buscado, encontrado) {
+  const a = palabrasSignificativasEstadio(buscado);
+  const b = palabrasSignificativasEstadio(encontrado);
+  if (a.length === 0 || b.length === 0) return true; // sin palabras significativas de ningún lado, no se puede descartar con este método
+  return a.some((p) => b.includes(p));
+}
 // No es infalible — nombres repetidos, tildes, "Estadio X" vs "X Arena"
-// pueden no calzar exacto — así que se toma el PRIMER resultado nomás:
-// mejor traer el dato con algo de margen de error que no traer nada. Si
+// pueden no calzar exacto igual pasando el chequeo de arriba — así que
+// entre los candidatos que SÍ calzan se toma el primero nomás. Si
 // encuentra un venue, se devuelve también su `id` para que cuotas.js lo
 // guarde en estadio_venue_id — así, en corridas futuras, ese partido ya
 // tiene id propio y puede usar obtenerDatosVenue directo, sin repetir esta
@@ -416,9 +450,14 @@ async function obtenerDatosVenuePorNombre(nombre) {
     console.error(`[obtenerDatosVenuePorNombre] Búsqueda "${nombre}": la API devolvió un error — status ${resp.status}, errors:`, errores);
     return null;
   }
-  const venue = data?.response?.[0];
-  if (!venue) {
+  const candidatos = data?.response || [];
+  if (candidatos.length === 0) {
     console.log(`[obtenerDatosVenuePorNombre] Búsqueda "${nombre}": sin resultados (results=${data?.results ?? 0}).`);
+    return null;
+  }
+  const venue = candidatos.find((v) => nombresDeEstadioCalzan(nombre, v.name)) || null;
+  if (!venue) {
+    console.log(`[obtenerDatosVenuePorNombre] Búsqueda "${nombre}": ${candidatos.length} resultado(s), pero NINGUNO calza por nombre (ej. "${candidatos[0]?.name}") — se descarta, mejor no traer nada que traer el estadio equivocado.`);
     return null;
   }
   console.log(`[obtenerDatosVenuePorNombre] Búsqueda "${nombre}" -> encontrado "${venue.name}" (id ${venue.id}, ${venue.city || 'sin ciudad'}).`);
