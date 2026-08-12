@@ -65,7 +65,7 @@ async function rutaCuotas(req, res) {
     .in('categoria', [4, 5])
     .eq('esta_activo', true)
     .not('fixture_id_api', 'is', null)
-    .or('cuota_local.is.null,estadio.is.null,arbitro.is.null,estadio_capacidad.is.null')
+    .or('cuota_local.is.null,estadio.is.null,arbitro.is.null,estadio_capacidad.is.null,estadio_imagen.is.null')
     .gte('fecha_expiracion', ahora.toISOString())
     .lte('fecha_expiracion', limite.toISOString())
     // Los partidos que juegan más pronto primero (a pedido, junto con el
@@ -141,7 +141,7 @@ async function rutaCuotas(req, res) {
       // llamada a /fixtures?id= que ya usa obtenerEstadoFixture (la
       // reaprovecha /vivo y /resolver), así que no es una consulta nueva a
       // la cuota de API-Football.
-      if (partido.estadio == null || partido.arbitro == null || partido.estadio_capacidad == null || partido.estado_partido === 'TBD') {
+      if (partido.estadio == null || partido.arbitro == null || partido.estadio_capacidad == null || partido.estadio_imagen == null || partido.estado_partido === 'TBD') {
         const info = await obtenerEstadoFixture(partido.fixture_id_api);
         if (info?.estadioNombre != null) payload.estadio = info.estadioNombre;
         if (info?.estadioCiudad != null) payload.estadio_ciudad = info.estadioCiudad;
@@ -174,7 +174,12 @@ async function rutaCuotas(req, res) {
         // name/city/country/capacity/surface/image) — queda pendiente si
         // alguna vez aparece en la API.
         const venueId = info?.estadioVenueId || partido.estadio_venue_id;
-        if (partido.estadio_capacidad == null && venueId) {
+        // (a pedido, bug reportado: "no imprime la foto del estadio" —
+        // partidos que ya tenían estadio_capacidad guardado de ANTES de que
+        // existiera esta columna nunca volvían a pedir /venues, así que se
+        // quedaban sin imagen para siempre. Ahora también reintenta si falta
+        // la imagen, aunque la capacidad ya esté.)
+        if ((partido.estadio_capacidad == null || partido.estadio_imagen == null) && venueId) {
           const venue = await obtenerDatosVenue(venueId);
           if (venue?.pais != null) payload.estadio_pais = venue.pais;
           if (venue?.capacidad != null) payload.estadio_capacidad = venue.capacidad;

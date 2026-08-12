@@ -906,6 +906,13 @@ async function obtenerFichaClub(teamId) {
       resultado = golesPropios > golesRival ? 'V' : golesPropios < golesRival ? 'P' : 'E';
     }
     return {
+      // fixtureId (a pedido, ficha de club -> gráfico de momentum): el id de
+      // API-Football de ESTE partido puntual — el frontend lo cruza contra
+      // desafios_mvp.fixture_id_api para encontrar el desafio_id y así poder
+      // pedir /momentum?desafioId=. Puede no calzar con ningún desafio
+      // nuestro (partidos que Demaster-app nunca trackeó): en ese caso el
+      // frontend simplemente no dibuja el gráfico para esa fila.
+      fixtureId: fx.fixture?.id ?? null,
       fecha: fx.fixture?.date || null,
       estado: fx.fixture?.status?.short || null,
       competencia: fx.league?.name || null,
@@ -925,8 +932,7 @@ async function obtenerFichaClub(teamId) {
       golesLocal: fx.goals?.home ?? null,
       golesVisita: fx.goals?.away ?? null,
       resultado,
-    };un build
-    
+    };
   }).sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
 
   const ficha = {
