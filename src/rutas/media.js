@@ -407,20 +407,43 @@ function aliasApareceEnTitulo(alias, tituloNormalizado) {
   return true;
 }
 
-// Busca por la tabla de alias (a pedido, primera opción antes que el método
-// viejo de palabras significativas): mucho más preciso porque compara contra
-// el apodo REAL que usa el canal, no contra el nombre completo de la base.
-// Devuelve null (no undefined) si algún equipo del partido no está en la
-// tabla — así el llamador sabe que tiene que caer al método viejo.
-function buscarPorAlias(equipoLocal, equipoVisitante, candidatosVideos, marcadorCoincide) {
-  const aliasesLocal = ALIASES_POR_EQUIPO[equipoLocal];
-  const aliasesVisita = ALIASES_POR_EQUIPO[equipoVisitante];
-  if (!aliasesLocal || !aliasesVisita) return null;
+// BUG encontrado (a pedido, diagnóstico Copa Libertadores: "Boca Juniors vs
+// Fluminense" no encontró nada aunque el resumen YA estaba en ESPN Fans): el
+// método viejo exigía que LOS DOS equipos estuvieran en ALIASES_POR_EQUIPO
+// para usar el alias — si solo UNO estaba (acá, Boca Juniors → "Boca", tabla
+// armada para Argentina/Chile; Fluminense no está, es brasileño) se
+// descartaba el alias entero y caía al método de "palabras significativas
+// completo", que exige TODAS las palabras del nombre de la base ("boca" Y
+// "juniors") — pero el canal tituló el video solo "BOCA 1-2 FLUMINENSE", sin
+// "Juniors", así que nunca calzaba.
+//
+// Arreglo: en vez de decidir el método PARA LOS DOS EQUIPOS A LA VEZ, se
+// decide POR EQUIPO — cada uno usa su alias si lo tiene, y si no, cae al
+// nombre completo o a las palabras significativas, de forma independiente
+// del otro. Así "Boca" (alias) + "Fluminense" (nombre completo, que si
+// aparece calza igual) matchean juntos sin que ninguno de los dos frene al
+// otro.
+function equipoApareceEnTitulo(nombreEquipo, tituloNormalizado) {
+  const aliases = ALIASES_POR_EQUIPO[nombreEquipo];
+  if (aliases && aliases.some((a) => aliasApareceEnTitulo(a, tituloNormalizado))) return true;
+  const nombreCompleto = normalizar(nombreEquipo);
+  if (nombreCompleto && tituloNormalizado.includes(nombreCompleto)) return true;
+  const palabras = palabrasSignificativas(nombreEquipo);
+  return palabras.length > 0 && palabras.every((p) => tituloNormalizado.includes(p));
+}
+
+// Busca el primer video candidato donde AMBOS equipos aparecen (cada uno por
+// su propio criterio, ver equipoApareceEnTitulo) y el marcador (si hay)
+// coincide. Reemplaza la cadena vieja de tres intentos separados
+// (alias-para-los-dos, nombre-completo-para-los-dos,
+// palabras-para-los-dos) — este único paso ya cubre esos tres casos Y las
+// combinaciones mixtas (uno con alias, el otro sin).
+function buscarPorEquipos(equipoLocal, equipoVisitante, candidatosVideos, marcadorCoincide) {
   return candidatosVideos.find((v) => {
     const titulo = normalizar(v.titulo);
-    const tieneLocal = aliasesLocal.some((a) => aliasApareceEnTitulo(a, titulo));
-    const tieneVisita = aliasesVisita.some((a) => aliasApareceEnTitulo(a, titulo));
-    return tieneLocal && tieneVisita && marcadorCoincide(v.titulo);
+    return equipoApareceEnTitulo(equipoLocal, titulo)
+      && equipoApareceEnTitulo(equipoVisitante, titulo)
+      && marcadorCoincide(v.titulo);
   }) || null;
 }
 
@@ -468,11 +491,6 @@ function buscarVideoResumenEnLista(equipoLocal, equipoVisitante, fechaPartidoISO
     ? candidatosVideos.map((v) => ({ ...v, titulo: segmentoConMarcador(v.titulo) }))
     : candidatosVideos;
 
-  const nl = normalizar(equipoLocal);
-  const nv = normalizar(equipoVisitante);
-  const palabrasLocal = palabrasSignificativas(equipoLocal);
-  const palabrasVisita = palabrasSignificativas(equipoVisitante);
-
   // Si hay marcador oficial cargado, el título tiene que traer ESE marcador
   // (como conjunto, sin importar el orden en que aparezcan los equipos) —
   // así se descarta un video con nombre parecido pero de otra categoría/
@@ -488,27 +506,13 @@ function buscarVideoResumenEnLista(equipoLocal, equipoVisitante, fechaPartidoISO
     return (a === x && b === y) || (a === y && b === x);
   };
 
-  // 1) Por ALIAS del canal (a pedido, primera prioridad): el apodo real que
-  // usa el canal para cada equipo, tabla armada a mano con Pablo mirando
-  // videos reales — mucho más preciso que adivinar por palabras del nombre
-  // completo. Si alguno de los dos equipos no está en la tabla, devuelve
-  // null y se sigue de largo a los métodos viejos de abajo.
-  // 2) Nombre completo tal cual está en la base (por si algún día coincide).
-  // 3) BUG encontrado (a pedido: "Rosario Central vs Racing" trajo el video
-  // de "Barracas Central vs Racing" — matcheaba por la palabra suelta
-  // "central", que las dos tienen): si el equipo tiene más de una palabra
-  // significativa, TIENEN que calzar TODAS, no cualquiera.
-  const match = buscarPorAlias(equipoLocal, equipoVisitante, videosParaNombres, marcadorCoincide)
-    || videosParaNombres.find((v) => {
-      const titulo = normalizar(v.titulo);
-      return titulo.includes(nl) && titulo.includes(nv) && marcadorCoincide(v.titulo);
-    })
-    || videosParaNombres.find((v) => {
-      const titulo = normalizar(v.titulo);
-      const tieneLocal = palabrasLocal.every((p) => titulo.includes(p));
-      const tieneVisita = palabrasVisita.every((p) => titulo.includes(p));
-      return tieneLocal && tieneVisita && marcadorCoincide(v.titulo);
-    });
+  // Para cada equipo, POR SEPARADO: alias del canal si está en la tabla,
+  // si no nombre completo tal cual está en la base, si no todas las
+  // palabras significativas del nombre (ver equipoApareceEnTitulo) — así un
+  // partido con un equipo aliasado (ej. "Boca" en Argentina/Chile) y el
+  // rival sin alias (ej. un club brasileño de Libertadores/Sudamericana)
+  // matchea igual, en vez de necesitar que LOS DOS estén en la tabla.
+  const match = buscarPorEquipos(equipoLocal, equipoVisitante, videosParaNombres, marcadorCoincide);
 
   return { videoId: match?.videoId || null, candidatos };
 }
