@@ -208,12 +208,16 @@ async function rutaCuotas(req, res) {
           }
           if (venue) {
             if (!venueId && venue.venueId != null) payload.estadio_venue_id = venue.venueId;
-            // Nombre/ciudad del estadio (a pedido): si el fixture no traía
-            // nada (ej. RB Bragantino, estadio quedaba null entero), el
-            // estadio del equipo también sirve para completar ESTOS
-            // campos, no solo capacidad/foto.
-            if (!payload.estadio && venue.nombre != null) payload.estadio = venue.nombre;
-            if (!payload.estadio_ciudad && venue.ciudad != null) payload.estadio_ciudad = venue.ciudad;
+            // Nombre/ciudad del estadio (a pedido, bug encontrado: "en
+            // Sevilla sale Sevilla" — el fixture a veces trae solo la
+            // CIUDAD como si fuera el nombre del estadio, ej. "Sevilla",
+            // "Vigo", "Córdoba". Antes acá NO se pisaba ese nombre porque
+            // ya "tenía algo" — ahora, cuando el fallback viene del equipo
+            // (venue.nombre existe), ese SIEMPRE manda por sobre lo que
+            // haya traído el fixture — es la fuente más confiable (mismo
+            // criterio que usa Forza Football).
+            if (venue.nombre != null) payload.estadio = venue.nombre;
+            if (venue.ciudad != null) payload.estadio_ciudad = venue.ciudad;
             if (venue.pais != null) payload.estadio_pais = venue.pais;
             if (venue.capacidad != null) payload.estadio_capacidad = venue.capacidad;
             if (venue.cesped != null) payload.estadio_cesped = venue.cesped;
