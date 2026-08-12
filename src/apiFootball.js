@@ -925,7 +925,8 @@ async function obtenerFichaClub(teamId) {
       golesLocal: fx.goals?.home ?? null,
       golesVisita: fx.goals?.away ?? null,
       resultado,
-    };
+    };un build
+    
   }).sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
 
   const ficha = {
