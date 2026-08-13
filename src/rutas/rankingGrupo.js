@@ -55,13 +55,14 @@ async function rutaRankingGrupo(req, res) {
 
   const { data: usuarios, error: errUsuarios } = await supabase
     .from('usuarios')
-    .select('id, nombre')
+    .select('id, nombre, avatar_url')
     .in('id', idsUnicos);
   if (errUsuarios) {
     return res.status(500).json({ error: errUsuarios.message });
   }
   const nombrePorId = {};
-  (usuarios || []).forEach((u) => { nombrePorId[u.id] = u.nombre; });
+  const avatarUrlPorId = {};
+  (usuarios || []).forEach((u) => { nombrePorId[u.id] = u.nombre; avatarUrlPorId[u.id] = u.avatar_url || null; });
 
   // Fin de la ventana: si el grupo está pausado, fecha_fin_conteo (quedó
   // congelado ahí); si está en juego, ahora mismo.
@@ -168,6 +169,7 @@ async function rutaRankingGrupo(req, res) {
     .map((id) => ({
       usuarioId: id,
       nombre: nombrePorId[id] || 'Jugador',
+      avatarUrl: avatarUrlPorId[id] || null,
       diamantesGrupo: sumaPorUsuario[id] || 0,
       desde: inicioPorUsuario[id],
     }))
