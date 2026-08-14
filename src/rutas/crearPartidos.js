@@ -109,6 +109,26 @@ function esRondaForzadaTierA(nombreRonda) {
   return RONDAS_FORZAR_TIER_A.some((k) => texto.includes(k));
 }
 
+// Rondas que NO se crean NUNCA, para nada, sin importar Tier A ni si la
+// ronda cuenta como instancia final (a pedido: "eliminar los partidos de
+// Champions que no están en la Fase de Liga, que es lo importante — los de
+// las rondas de clasificación previa/playoffs no corresponde traerlos").
+// A diferencia de RONDAS_FORZAR_TIER_A (que igual trae el partido si hay un
+// equipo Tier A jugándolo), esto bloquea la ronda entera, incluso si juega
+// un equipo grande — el jugador solo pronostica la Fase de Liga en
+// Champions, que arranca el 8 de septiembre 2026 (sorteo pendiente al
+// momento de este cambio). Sacar 'Champions League' de este mapa (o vaciar
+// el array) apenas se confirme el fixture real de la Fase de Liga.
+const RONDAS_EXCLUIDAS_POR_COMPETENCIA = {
+  'Champions League': ['qualifying', 'play-off', 'playoff'],
+};
+function esRondaExcluidaPorCompleto(competencia, nombreRonda) {
+  const excluidas = RONDAS_EXCLUIDAS_POR_COMPETENCIA[competencia];
+  if (!excluidas || excluidas.length === 0) return false;
+  const texto = String(nombreRonda || '').toLowerCase();
+  return excluidas.some((k) => texto.includes(k));
+}
+
 function equipoEnTierA(nombreEquipo, listaTierA) {
   return listaTierA.some((tierA) => esMismoEquipo(tierA, nombreEquipo));
 }
@@ -312,6 +332,15 @@ async function rutaCrearPartidos(req, res) {
         // crear todavía; se vuelve a intentar solo en la próxima corrida.
         if (!equipoLocal || !equipoVisita) {
           resumenLiga.saltadosPorEquiposSinDefinir++;
+          continue;
+        }
+
+        // Bloqueo total por ronda (ver RONDAS_EXCLUIDAS_POR_COMPETENCIA) —
+        // va ANTES de esInstanciaFinal a propósito: "Play-offs" cuenta como
+        // instancia final (KEYWORDS_KNOCKOUT) y por eso se traería completa
+        // sin filtro de Tier A si no se corta acá primero.
+        if (esRondaExcluidaPorCompleto(competencia, nombreRonda)) {
+          resumenLiga.saltadosPorRondaExcluida = (resumenLiga.saltadosPorRondaExcluida || 0) + 1;
           continue;
         }
 
