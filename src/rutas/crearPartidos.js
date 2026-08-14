@@ -284,6 +284,47 @@ async function rutaCrearPartidos(req, res) {
       const idsYaExistentes = new Set(existentePorFixtureId.keys());
       const filasActualizarFecha = [];
 
+      // SEGUNDO dedupe, por CRUCE (equipos + competencia) en vez de
+      // fixture_id_api (a pedido, bug reportado: "en el editor de canales de
+      // TV me siguen saliendo partidos duplicados y con mensaje 'posible
+      // duplicado'"). CAUSA encontrada: cuando API-Football reprograma un
+      // partido, a veces le cambia el fixture_id_api (no solo la fecha) —
+      // el dedupe de arriba, que solo mira fixture_id_api, no lo reconoce
+      // como "ya existe" y crea una fila NUEVA, dejando la vieja huérfana
+      // en la base con su fecha desactualizada. Con el tiempo eso arma pares
+      // de filas "mismos equipos, misma competencia, fechas parecidas" que
+      // el editor de canales TV marca en rojo como posible duplicado.
+      // Acá se arma un mapa de los partidos SIN RESOLVER que ya existen en
+      // esta competencia (ya estaban en la base antes de esta corrida),
+      // agrupados por cruce normalizado (mismo criterio que
+      // limpiar_partidos_duplicados_v2.sql y el detector del editor de
+      // canales TV en sementomvp.jsx). Si un candidato nuevo calza con uno
+      // de estos por cruce Y su fecha cae dentro de 10 días de la
+      // guardada, se asume que es EL MISMO partido con fixture_id_api
+      // nuevo: se actualiza la fila vieja en vez de crear una fila extra.
+      const normalizarCruce = (s) => String(s || '')
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .trim().toLowerCase();
+      const claveCruce = (local, visita) => `${normalizarCruce(local)}|${normalizarCruce(visita)}|${normalizarCruce(competencia)}`;
+      const { data: abiertosCompetencia, error: errAbiertos } = await supabase
+        .from('desafios_mvp')
+        .select('id, equipo_local, equipo_visitante, fecha_expiracion, fixture_id_api, resultado_oficial, goles_local_oficial, goles_visitante_oficial')
+        .eq('tema', competencia)
+        .in('categoria', [4, 5])
+        .eq('esta_activo', true);
+      if (errAbiertos) throw errAbiertos;
+      const cruceExistentePorClave = new Map();
+      (abiertosCompetencia || []).forEach((d) => {
+        // Solo interesan los SIN RESOLVER — un partido ya jugado no puede
+        // ser "el mismo" que uno que la API todavía lista como futuro.
+        const resuelto = d.resultado_oficial != null || d.goles_local_oficial != null || d.goles_visitante_oficial != null;
+        if (resuelto) return;
+        const k = claveCruce(d.equipo_local, d.equipo_visitante);
+        if (!cruceExistentePorClave.has(k)) cruceExistentePorClave.set(k, []);
+        cruceExistentePorClave.get(k).push(d);
+      });
+      const filasActualizarFixtureId = [];
+
       // Diagnóstico: nombres de ronda tal cual los devuelve API-Football
       // para esta liga en este lote — sirve para confirmar si el texto real
       // calza con KEYWORDS_KNOCKOUT (ej. "Round of 16" vs "Octavos de
@@ -393,6 +434,35 @@ async function rutaCrearPartidos(req, res) {
           }
         }
 
+        // Chequeo por CRUCE antes de crear (ver comentario grande donde se
+        // arma cruceExistentePorClave más arriba): si ya hay un partido sin
+        // resolver con estos mismos equipos+competencia y fecha cercana (10
+        // días de margen — suficiente para cubrir cualquier reprogramación
+        // real, pero corto para no confundir dos torneos distintos entre
+        // los mismos rivales), es el MISMO partido con fixture_id_api
+        // nuevo: se actualiza esa fila en vez de insertar una fila extra
+        // (que es justo lo que venía generando los "posibles duplicados"
+        // en el editor de canales TV).
+        const kCruce = claveCruce(equipoLocal, equipoVisita);
+        const candidatosCruce = cruceExistentePorClave.get(kCruce) || [];
+        const fechaApiMs = new Date(fx.fixture.date).getTime();
+        const matchPorCruce = candidatosCruce.find((d) => {
+          const fechaExistenteMs = new Date(d.fecha_expiracion).getTime();
+          return Number.isFinite(fechaExistenteMs) && Math.abs(fechaApiMs - fechaExistenteMs) <= 10 * 24 * 3600 * 1000;
+        });
+        if (matchPorCruce) {
+          resumenLiga.actualizadosPorCruce = (resumenLiga.actualizadosPorCruce || 0) + 1;
+          const fechaISOCruce = new Date(fx.fixture.date).toISOString();
+          filasActualizarFixtureId.push({
+            id: matchPorCruce.id,
+            fixture_id_api: fx.fixture.id,
+            fecha_expiracion: fechaISOCruce,
+            subtitulo: subtituloFecha(fechaISOCruce),
+            tiempo: tiempoCorto(fechaISOCruce),
+          });
+          continue;
+        }
+
         // Categoría 4 siempre (a pedido) — ver nota de cabecera. tipo:'doble'
         // es lo que hace que sementomvp.jsx le pida al jugador el marcador
         // exacto como SEGUNDO paso después de elegir L/E/V (ver handleVotar,
@@ -468,6 +538,31 @@ async function rutaCrearPartidos(req, res) {
             resultadoGeneral.errores.push({ competencia, error: `No se pudo corregir fecha del partido ${f.id}: ${errUpdateFecha.message}` });
           } else {
             resultadoGeneral.totalFechasCorregidas++;
+          }
+        }
+      }
+
+      // Aplicar las actualizaciones por CRUCE (ver comentario grande donde
+      // se detectan, más arriba) — mismo patrón en paralelo que las
+      // correcciones de fecha. Actualiza fixture_id_api + fecha de la fila
+      // vieja en vez de haber creado una fila nueva duplicada.
+      if (filasActualizarFixtureId.length > 0) {
+        resumenLiga.actualizadosPorCruce = filasActualizarFixtureId.length;
+        resumenLiga.ejemplosActualizadosPorCruce = filasActualizarFixtureId.slice(0, 5).map((f) => ({
+          id: f.id, fixtureIdNuevo: f.fixture_id_api, fecha: f.fecha_expiracion,
+        }));
+        const resultadosCruce = await Promise.all(filasActualizarFixtureId.map((f) =>
+          supabase
+            .from('desafios_mvp')
+            .update({ fixture_id_api: f.fixture_id_api, fecha_expiracion: f.fecha_expiracion, subtitulo: f.subtitulo, tiempo: f.tiempo })
+            .eq('id', f.id)
+            .then(({ error }) => ({ f, error }))
+        ));
+        for (const { f, error: errUpdateCruce } of resultadosCruce) {
+          if (errUpdateCruce) {
+            resultadoGeneral.errores.push({ competencia, error: `No se pudo actualizar por cruce el partido ${f.id}: ${errUpdateCruce.message}` });
+          } else {
+            resultadoGeneral.totalActualizadosPorCruce = (resultadoGeneral.totalActualizadosPorCruce || 0) + 1;
           }
         }
       }
