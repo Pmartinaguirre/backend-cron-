@@ -25,7 +25,7 @@ async function rutaRankingGrupo(req, res) {
 
   const { data: sala, error: errSala } = await supabase
     .from('salas_privadas_mvp')
-    .select('id, nombre, admin_id, juego_activo, fecha_inicio_conteo, fecha_fin_conteo, competencias')
+    .select('id, nombre, admin_id, juego_activo, fecha_inicio_conteo, fecha_fin_conteo, competencias, equipos_seguidos')
     .eq('id', salaId)
     .single();
   if (errSala || !sala) {
@@ -55,13 +55,14 @@ async function rutaRankingGrupo(req, res) {
 
   const { data: usuarios, error: errUsuarios } = await supabase
     .from('usuarios')
-    .select('id, nombre')
+    .select('id, nombre, avatar_url')
     .in('id', idsUnicos);
   if (errUsuarios) {
     return res.status(500).json({ error: errUsuarios.message });
   }
   const nombrePorId = {};
-  (usuarios || []).forEach((u) => { nombrePorId[u.id] = u.nombre; });
+  const avatarUrlPorId = {};
+  (usuarios || []).forEach((u) => { nombrePorId[u.id] = u.nombre; avatarUrlPorId[u.id] = u.avatar_url || null; });
 
   // Fin de la ventana: si el grupo está pausado, fecha_fin_conteo (quedó
   // congelado ahí); si está en juego, ahora mismo.
@@ -93,43 +94,73 @@ async function rutaRankingGrupo(req, res) {
     return res.status(500).json({ error: errHist.message });
   }
 
-  // FILTRO POR COMPETENCIA DEL GRUPO (a pedido, bug reportado: "creé un
-  // grupo hoy que juega solo la liga chilena y ya tengo 5 puntos, sin que
+  // FILTRO POR COMPETENCIA/EQUIPOS DEL GRUPO (a pedido, bug reportado: "creé
+  // un grupo hoy que juega solo la liga chilena y ya tengo 5 puntos, sin que
   // se haya jugado ningún partido de esa liga todavía"). Antes esto sumaba
   // TODO el historial de diamantes del jugador dentro de la ventana de
   // fechas, sin mirar a qué competencia pertenecía cada pago — un diamante
   // ganado hoy en OTRA liga (o en otro grupo) contaba igual acá, con tal de
-  // que la fecha cayera dentro de la ventana. Ahora, si el grupo tiene una
-  // lista de competencias configurada (`salas_privadas_mvp.competencias`),
-  // un pago solo cuenta si:
-  //   a) no está atado a ningún partido (desafio_id NULL — ej. un diamante
-  //      otorgado a mano por un admin sin partido asociado), o
-  //   b) el partido pertenece a una de las competencias del grupo.
+  // que la fecha cayera dentro de la ventana.
+  //
+  // BUG #2 corregido (a pedido, reportado con el grupo "Vamos UC" — solo
+  // sigue a Universidad Católica vía `equipos_seguidos`, sin ninguna
+  // competencia marcada en `competencias`): el filtro de acá SOLO miraba
+  // `competencias`, nunca `equipos_seguidos` — así que un grupo que solo
+  // sigue equipos sueltos (competencias = []) caía en "sin restricción,
+  // cuenta todo" en vez de "restringido a los partidos de esos equipos". Un
+  // diamante ganado en OTRO partido de OTRA competencia (ej. Copa
+  // Libertadores, cuando el grupo solo sigue a la UC en el torneo local)
+  // contaba igual, apareciendo en la tabla de posiciones del grupo sin
+  // corresponder.
+  //
+  // Regla nueva: un pago cuenta si...
+  //   a) no está atado a ningún partido (desafio_id NULL — diamante a mano
+  //      por un admin, sin partido asociado), o
+  //   b) el partido pertenece a una de las competencias del grupo, o
+  //   c) juega alguno de los equipos sueltos que sigue el grupo
+  //      (`equipos_seguidos`, independiente de la competencia — mismo
+  //      criterio que `esDeMisGrupos` en sementomvp.jsx).
+  // Si el grupo NO tiene NI competencias NI equipos_seguidos configurados
+  // (grupo sin ninguna restricción, ej. "Jugar todo"), no se filtra nada —
+  // eso sigue igual que antes.
   const idsDesafiosReferenciados = [...new Set((historial || []).map((h) => h.desafio_id).filter(Boolean))];
-  const temaPorDesafio = {};
+  const desafioPorId = {};
   if (idsDesafiosReferenciados.length > 0) {
     const { data: desafiosRef, error: errDesafiosRef } = await supabase
       .from('desafios_mvp')
-      .select('id, tema')
+      .select('id, tema, equipo_local, equipo_visitante')
       .in('id', idsDesafiosReferenciados);
     if (errDesafiosRef) {
       return res.status(500).json({ error: errDesafiosRef.message });
     }
-    (desafiosRef || []).forEach((d) => { temaPorDesafio[d.id] = d.tema; });
+    (desafiosRef || []).forEach((d) => { desafioPorId[d.id] = d; });
   }
   const competenciasGrupo = sala.competencias || [];
+  const equiposSeguidosGrupo = sala.equipos_seguidos || [];
+  const hayRestriccion = competenciasGrupo.length > 0 || equiposSeguidosGrupo.length > 0;
+  const normEquipo = (s) => String(s || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().trim();
+  const equiposSeguidosNorm = equiposSeguidosGrupo.map(normEquipo);
 
   const sumaPorUsuario = {};
   idsUnicos.forEach((id) => { sumaPorUsuario[id] = 0; });
   (historial || []).forEach((h) => {
     const desde = inicioPorUsuario[h.usuario_id];
     if (!desde || h.fecha_creacion < desde) return;
-    if (h.desafio_id && competenciasGrupo.length > 0) {
-      const tema = temaPorDesafio[h.desafio_id];
-      // Si el desafío referenciado no tiene tema reconocido, se cuenta igual
+    if (h.desafio_id && hayRestriccion) {
+      const d = desafioPorId[h.desafio_id];
+      // Si el desafío referenciado no se pudo cargar, se cuenta igual
       // (mejor sumar de más un caso raro que restarle diamantes reales a un
       // jugador por un dato faltante).
-      if (tema && !competenciasGrupo.includes(tema)) return;
+      if (d) {
+        const temaCalza = d.tema && competenciasGrupo.includes(d.tema);
+        const equipoCalza = equiposSeguidosNorm.length > 0 && (
+          equiposSeguidosNorm.includes(normEquipo(d.equipo_local)) ||
+          equiposSeguidosNorm.includes(normEquipo(d.equipo_visitante))
+        );
+        if (!temaCalza && !equipoCalza) return;
+      }
     }
     sumaPorUsuario[h.usuario_id] = (sumaPorUsuario[h.usuario_id] || 0) + (h.monto || 0);
   });
@@ -138,6 +169,7 @@ async function rutaRankingGrupo(req, res) {
     .map((id) => ({
       usuarioId: id,
       nombre: nombrePorId[id] || 'Jugador',
+      avatarUrl: avatarUrlPorId[id] || null,
       diamantesGrupo: sumaPorUsuario[id] || 0,
       desde: inicioPorUsuario[id],
     }))

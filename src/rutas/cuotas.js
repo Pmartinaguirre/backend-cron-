@@ -49,7 +49,7 @@ async function rutaCuotas(req, res) {
   const limiteTBD = new Date(ahora);
   limiteTBD.setDate(limiteTBD.getDate() + DIAS_VENTANA_TBD);
 
-  const columnas = 'id, pregunta, fixture_id_api, categoria, fecha_expiracion, estado_partido, cuota_local, estadio, estadio_ciudad, estadio_pais, estadio_capacidad, estadio_cesped, estadio_venue_id, estadio_imagen, arbitro, arbitro_pais, equipo_local_id';
+  const columnas = 'id, pregunta, fixture_id_api, categoria, fecha_expiracion, estado_partido, cuota_local, estadio, estadio_ciudad, estadio_pais, estadio_capacidad, estadio_cesped, estadio_venue_id, estadio_imagen, arbitro, arbitro_pais, equipo_local_id, info_partido_corregida';
 
   // Estadio + árbitro (a pedido, "Información del partido" en la app): se
   // traen JUNTO con las cuotas, en la misma corrida — mismo criterio que
@@ -133,16 +133,6 @@ async function rutaCuotas(req, res) {
   const faltaEstadio = (p) => p.estadio_capacidad == null || p.estadio_imagen == null;
   const horario = (p) => p.fecha_expiracion ? new Date(p.fecha_expiracion).getTime() : Infinity;
   const esUrgente = (p) => horario(p) <= limiteUrgente.getTime();
-  const todosLosPartidos = [...todosLosPartidosSinOrden].sort((a, b) => {
-    const ua = esUrgente(a) ? 0 : 1;
-    const ub = esUrgente(b) ? 0 : 1;
-    if (ua !== ub) return ua - ub;
-    if (ua === 0) return horario(a) - horario(b);
-    const fa = faltaEstadio(a) ? 0 : 1;
-    const fb = faltaEstadio(b) ? 0 : 1;
-    if (fa !== fb) return fa - fb;
-    return horario(a) - horario(b);
-  });
 
   // TOPE POR CORRIDA (a pedido, bug reportado: cron-job.org viene fallando
   // por "tiempo de espera agotado" varios días seguidos, siempre justo en
@@ -157,11 +147,51 @@ async function rutaCuotas(req, res) {
   // le falta algo), así que no hay riesgo de dejar un partido colgado para
   // siempre, solo tarda una corrida más en completarse.
   const MAX_PARTIDOS_POR_CORRIDA = Number(process.env.MAX_PARTIDOS_POR_CORRIDA_CUOTAS) || 15;
-  const partidos = todosLosPartidos.slice(0, MAX_PARTIDOS_POR_CORRIDA);
+
+  // CUPO RESERVADO por categoría (a pedido, bug reportado: "los próximos 84
+  // partidos vienen todos con árbitro null" — diagnosticado: la prioridad
+  // "falta estadio primero" (ver más abajo) no tenía ningún tope, así que
+  // si había 15+ partidos NO urgentes con estadio incompleto (algo común:
+  // fixtures lejanos que todavía no tienen venue.id en API-Football), esos
+  // se comían el cupo COMPLETO de la corrida, corrida tras corrida — el
+  // resto de los partidos (a los que solo les faltaba árbitro/cuota, con el
+  // estadio ya completo) nunca llegaban ni a intentarse mientras ese
+  // backlog de estadios no bajara de 15. Antes esto molestaba menos porque
+  // el árbitro igual no se confirma con tanta anticipación, pero un backlog
+  // de estadios grande y persistente podía dejar la búsqueda de árbitro
+  // COMPLETAMENTE trabada para todo partido no-urgente, no solo demorada.
+  // Ahora, fuera de los urgentes (que siguen yendo TODOS primero, sin
+  // tope entre ellos más que el cupo total), el cupo restante se reparte
+  // MITAD Y MITAD entre "falta estadio" y "el resto" — así ningún backlog
+  // de una categoría puede dejar a la otra sin ninguna corrida.
+  const urgentes = todosLosPartidosSinOrden
+    .filter(esUrgente)
+    .sort((a, b) => horario(a) - horario(b));
+  const noUrgentes = todosLosPartidosSinOrden.filter((p) => !esUrgente(p));
+  const noUrgentesFaltaEstadio = noUrgentes
+    .filter(faltaEstadio)
+    .sort((a, b) => horario(a) - horario(b));
+  const noUrgentesResto = noUrgentes
+    .filter((p) => !faltaEstadio(p))
+    .sort((a, b) => horario(a) - horario(b));
+
+  let partidos = urgentes.slice(0, MAX_PARTIDOS_POR_CORRIDA);
+  const cupoRestante = MAX_PARTIDOS_POR_CORRIDA - partidos.length;
+  if (cupoRestante > 0) {
+    const cupoEstadio = Math.ceil(cupoRestante / 2);
+    const tomadosEstadio = noUrgentesFaltaEstadio.slice(0, cupoEstadio);
+    partidos = partidos.concat(tomadosEstadio);
+    // Si "falta estadio" no llenó su mitad (backlog chico), el sobrante de
+    // cupo pasa a "el resto" — no se pierde cupo por repartir en partes
+    // iguales cuando una de las dos categorías tiene menos partidos que su
+    // mitad asignada.
+    const cupoRestoAjustado = cupoRestante - tomadosEstadio.length;
+    partidos = partidos.concat(noUrgentesResto.slice(0, cupoRestoAjustado));
+  }
 
   const resultado = {
     revisados: partidos.length,
-    pendientesProximaCorrida: Math.max(0, todosLosPartidos.length - partidos.length),
+    pendientesProximaCorrida: Math.max(0, todosLosPartidosSinOrden.length - partidos.length),
     actualizados: 0,
     sinCuotaTodavia: 0,
     errores: [],
@@ -184,7 +214,16 @@ async function rutaCuotas(req, res) {
       // llamada a /fixtures?id= que ya usa obtenerEstadoFixture (la
       // reaprovecha /vivo y /resolver), así que no es una consulta nueva a
       // la cuota de API-Football.
-      if (partido.estadio == null || partido.arbitro == null || partido.estadio_capacidad == null || partido.estadio_imagen == null || partido.estado_partido === 'TBD') {
+      // "info_partido_corregida" (a pedido: "como corrijo estadios y
+      // árbitros con el admin, mientras tanto?" — ver ModuloAdminEstadio en
+      // sementomvp.jsx y agregar_columna_info_partido_corregida.sql): si
+      // Pablo ya corrigió a mano estadio/árbitro de ESTE partido puntual,
+      // el cron nunca más los vuelve a pisar — mismo criterio que
+      // media_video_corregido usa para el video de YouTube. Sin este
+      // chequeo, la corrección manual duraría hasta la próxima corrida,
+      // que la volvería a sobrescribir con el dato (posiblemente
+      // equivocado, o simplemente inexistente) de API-Football.
+      if (!partido.info_partido_corregida && (partido.estadio == null || partido.arbitro == null || partido.estadio_capacidad == null || partido.estadio_imagen == null || partido.estado_partido === 'TBD')) {
         const info = await obtenerEstadoFixture(partido.fixture_id_api);
         if (info?.estadioNombre != null) payload.estadio = info.estadioNombre;
         if (info?.estadioCiudad != null) payload.estadio_ciudad = info.estadioCiudad;

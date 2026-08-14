@@ -55,7 +55,6 @@ const LIGAS = [
   { competencia: 'Premier League Inglaterra', leagueId: 39, modo: MODO_COMPLETA },
   { competencia: 'Ligue 1 Francia', leagueId: 61, modo: MODO_COMPLETA },
   { competencia: 'Champions League', leagueId: 2, modo: MODO_COMPLETA },
-  { competencia: 'Liga MX México', leagueId: 262, modo: MODO_TIER_A },
 ];
 
 function modoDeCompetencia(competencia) {

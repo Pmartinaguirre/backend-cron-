@@ -76,7 +76,7 @@ async function rutaGanadorSemanal(req, res) {
 
   const { data: grupos, error: errGrupos } = await supabase
     .from('salas_privadas_mvp')
-    .select('id, nombre, competencias');
+    .select('id, nombre, competencias, equipos_seguidos');
   if (errGrupos) {
     return res.status(500).json({ error: errGrupos.message });
   }
@@ -120,26 +120,43 @@ async function rutaGanadorSemanal(req, res) {
         .lt('fecha_creacion', new Date(fin).toISOString());
       if (errHist) throw errHist;
 
-      // Mismo filtro por competencia del grupo que /ranking-grupo (ver nota
-      // grande ahí) — si no, el "Ganador semanal" podía salir premiado por
-      // diamantes ganados en una liga que ese grupo ni sigue.
+      // Mismo filtro por competencia/equipos del grupo que /ranking-grupo
+      // (ver nota grande ahí, incluye el fix de "equipos_seguidos" — antes
+      // solo miraba `competencias`, así que un grupo que solo sigue equipos
+      // sueltos, sin ninguna competencia marcada, caía en "sin restricción,
+      // cuenta todo" en vez de filtrar por esos equipos) — si no, el
+      // "Ganador semanal" podía salir premiado por diamantes ganados en una
+      // liga/partido que ese grupo ni sigue.
       const idsDesafiosReferenciados = [...new Set((historial || []).map((h) => h.desafio_id).filter(Boolean))];
-      const temaPorDesafio = {};
+      const desafioPorId = {};
       if (idsDesafiosReferenciados.length > 0) {
         const { data: desafiosRef, error: errDesafiosRef } = await supabase
           .from('desafios_mvp')
-          .select('id, tema')
+          .select('id, tema, equipo_local, equipo_visitante')
           .in('id', idsDesafiosReferenciados);
         if (errDesafiosRef) throw errDesafiosRef;
-        (desafiosRef || []).forEach((d) => { temaPorDesafio[d.id] = d.tema; });
+        (desafiosRef || []).forEach((d) => { desafioPorId[d.id] = d; });
       }
       const competenciasGrupo = grupo.competencias || [];
+      const equiposSeguidosGrupo = grupo.equipos_seguidos || [];
+      const hayRestriccion = competenciasGrupo.length > 0 || equiposSeguidosGrupo.length > 0;
+      const normEquipo = (s) => String(s || '')
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .toLowerCase().trim();
+      const equiposSeguidosNorm = equiposSeguidosGrupo.map(normEquipo);
 
       const sumaPorUsuario = {};
       (historial || []).forEach((h) => {
-        if (h.desafio_id && competenciasGrupo.length > 0) {
-          const tema = temaPorDesafio[h.desafio_id];
-          if (tema && !competenciasGrupo.includes(tema)) return;
+        if (h.desafio_id && hayRestriccion) {
+          const d = desafioPorId[h.desafio_id];
+          if (d) {
+            const temaCalza = d.tema && competenciasGrupo.includes(d.tema);
+            const equipoCalza = equiposSeguidosNorm.length > 0 && (
+              equiposSeguidosNorm.includes(normEquipo(d.equipo_local)) ||
+              equiposSeguidosNorm.includes(normEquipo(d.equipo_visitante))
+            );
+            if (!temaCalza && !equipoCalza) return;
+          }
         }
         sumaPorUsuario[h.usuario_id] = (sumaPorUsuario[h.usuario_id] || 0) + (h.monto || 0);
       });
