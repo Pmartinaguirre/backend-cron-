@@ -9,7 +9,7 @@
 // Sin exigirSecreto (mismo criterio que /diagnostico-cobertura): de solo
 // lectura, pensado para pegarle directo desde el navegador.
 const { TEMPORADA, leagueIdDeCompetencia } = require('../ligas');
-const { obtenerEstadisticasJugadores } = require('../apiFootball');
+const { obtenerEstadisticasJugadores, calcularNotaDemaster } = require('../apiFootball');
 
 const API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY;
 const BASE = 'https://v3.football.api-sports.io';
@@ -39,16 +39,50 @@ async function rutaDiagnosticoPartido(req, res) {
       // problema está en cómo se cruza/calcula acá.
       const idLocal = fx.teams?.home?.id;
       const statsJugadores = await obtenerEstadisticasJugadores(fixtureId);
+
+      // Doble amarilla / roja directa / autogol, calculado directo de los
+      // eventos CRUDOS (mismo criterio que marcasDisciplinariasPorJugador
+      // en apiFootball.js, pero sin pasar por el mapeo de obtenerDetalleFixture
+      // — acá alcanza con esto para el diagnóstico).
+      const dobleAmarilla = new Set();
+      const rojaDirecta = new Set();
+      const autogoles = new Map();
+      (fx.events || []).forEach((ev) => {
+        const id = ev.player?.id;
+        if (id == null) return;
+        if (ev.type === 'Card' && ev.detail === 'Second Yellow card') dobleAmarilla.add(id);
+        else if (ev.type === 'Card' && ev.detail === 'Red Card') rojaDirecta.add(id);
+        else if (ev.type === 'Goal' && ev.detail === 'Own Goal') autogoles.set(id, (autogoles.get(id) || 0) + 1);
+      });
+
       const jugadoresPorEquipo = (fx.lineups || []).map((l) => ({
         equipo: l.team?.name || '',
         esLocal: l.team?.id === idLocal,
         titulares: (l.startXI || []).map((x) => {
           const id = x.player?.id ?? null;
           const s = id != null ? statsJugadores.get(id) : null;
+          const posicion = x.player?.pos || s?.posicion || null;
+          const notaDemaster = s && s.rating != null && (s.minutos || 0) >= 10
+            ? calcularNotaDemaster({
+                rating: s.rating,
+                posicion,
+                golesTotal: s.golesTotal,
+                asistencias: s.asistencias,
+                golesConcedidos: s.golesConcedidos,
+                minutos: s.minutos,
+                penalScored: s.penalScored,
+                penalMissed: s.penalMissed,
+                penalSaved: s.penalSaved,
+                dobleAmarilla: dobleAmarilla.has(id),
+                rojaDirecta: rojaDirecta.has(id),
+                autogoles: autogoles.get(id) || 0,
+              })
+            : null;
           return {
             id,
             nombre: x.player?.name || '',
             posicionLineup: x.player?.pos || null,
+            notaDemaster,
             statsCrudas: s || 'SIN estadísticas de /fixtures/players para este id',
           };
         }),
