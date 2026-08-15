@@ -702,7 +702,12 @@ const TABLA_PUNTOS_RATING = [
 ];
 function puntosPorRating(rating) {
   if (rating == null || Number.isNaN(rating)) return null;
-  const r = Math.max(0, Math.min(10, rating));
+  // Piso de 3 (a pedido: "la nota mínima es 3 y la max es 10") — el rating
+  // que manda API-Football en la práctica no baja de ~3 salvo casos
+  // rarísimos; se clampea acá para no leer de más un dato raro de la API.
+  // Esto es la BASE nomás: la nota FINAL (después de goles/tarjetas/etc.)
+  // sí puede terminar en 0 o 1 — ver el piso al final de calcularNotaDemaster.
+  const r = Math.max(3, Math.min(10, rating));
   const tramo = TABLA_PUNTOS_RATING.find((t) => r >= t.min && r <= t.max);
   return tramo ? tramo.puntos : 0;
 }
@@ -741,7 +746,11 @@ function calcularNotaDemaster({
   // del equipo, para que valga aunque haya entrado de cambio.
   if (posicion === 'G' && (minutos || 0) > 0 && (golesConcedidos || 0) === 0) puntos += 1;
 
-  return Math.round(puntos * 10) / 10;
+  // Piso de 0 en la nota FINAL (a pedido: "hay jugadores con nota 1 y otros
+  // con nota 0") — la base ya no baja de -4 (rating clampeado a 3 más
+  // arriba), pero los descuentos (roja, autogol, penal fallado...) pueden
+  // seguir restando hasta dejarla en 0 o 1 en partidos malos. Nunca negativa.
+  return Math.max(0, Math.round(puntos * 10) / 10);
 }
 
 // /fixtures/players?fixture=ID trae, por jugador, el bloque "statistics" con
@@ -964,11 +973,18 @@ async function obtenerDetalleFixture(fixtureId) {
   // cambios) con su ficha en la cancha, arma la URL de su foto en el CDN de
   // API-Football (media.api-sports.io/football/players/<id>.png, estático,
   // no gasta cuota), y cruza con `statsJugadores` para la nota.
-  const armarJugador = (x) => {
+  //
+  // `esTitular` (a pedido: "los jugadores que entraron desde la banca no
+  // tienen nota puesta") — la nota SOLO se calcula para el once inicial, no
+  // para los que entraron de cambio, sin importar cuántos minutos jugaron.
+  // Y aun siendo titular, hace falta un mínimo de 10 minutos en cancha (a
+  // pedido: "el tiempo mínimo para darle a un jugador una nota es 10
+  // minutos") — un titular sacado a los 5' por lesión tampoco recibe nota.
+  const armarJugador = (x, esTitular) => {
     const id = x.player?.id ?? null;
     const posicion = x.player?.pos || null;
     const stats = id != null ? statsJugadores.get(id) : null;
-    const notaDemaster = stats && stats.rating != null
+    const notaDemaster = esTitular && stats && stats.rating != null && (stats.minutos || 0) >= 10
       ? calcularNotaDemaster({
           rating: stats.rating,
           posicion: posicion || stats.posicion,
@@ -1008,8 +1024,8 @@ async function obtenerDetalleFixture(fixtureId) {
     // corrido, por ejemplo). API-Football no siempre lo manda —en ligas
     // chicas suele venir null—, así que el frontend cae al string de
     // formación cuando falta.
-    titulares: (l.startXI || []).map(armarJugador),
-    suplentes: (l.substitutes || []).map(armarJugador),
+    titulares: (l.startXI || []).map((x) => armarJugador(x, true)),
+    suplentes: (l.substitutes || []).map((x) => armarJugador(x, false)),
   } : null;
 
   const lineups = fx.lineups || [];
