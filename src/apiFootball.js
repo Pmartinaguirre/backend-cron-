@@ -678,21 +678,66 @@ async function obtenerPosicionesDeLiga(leagueId, season) {
 // probable) — antes de eso no hay minutos ni rating que traer.
 // ============================================================
 
-// CORREGIDO (a pedido, bug reportado con datos reales de San Lorenzo-Unión:
-// "tiene que mostrar la nota entre 3 y 10, no ese puntaje" — un rating
-// normal de 6.0 mostraba "0.0" porque pasaba por la tabla de conversión a
-// PUNTOS de Comunio, que es una escala de puntos de fantasy (-4 a +14, para
-// sumar toda una fecha), no una nota de partido). La nota de Demaster.app es
-// eso, una NOTA — así que la base es el rating tal cual (clampeado a 3-10,
-// que es el rango real en el que se mueve API-Football salvo casos
-// rarísimos), sin pasarlo por ninguna tabla. Los bonos de "puntos extra"
-// (goles, asistencias, tarjetas, etc.) se suman/restan directo sobre esa
-// nota — así un partido sin nada especial queda con un número que se lee
-// como cualquier nota de fútbol, y un partidazo con gol la puede empujar
-// por encima de 10.
-function basePorRating(rating) {
+// CORREGIDO DE NUEVO (a pedido: "encontré el error. Cuando un jugador suma
+// puntos extra esos puntos que gana van a la tabla de conversión, no
+// directo a su nota"). El mecanismo real, con el ejemplo que mandó (Auzmendi
+// 7.3 → tabla → 6 puntos, +3 de gol delantero → 9 puntos → tabla, vuelta →
+// nota 7.8) es de IDA Y VUELTA por la MISMA tabla:
+//   1) el rating crudo se convierte a PUNTOS por la tabla (ratingAPuntos).
+//   2) los bonos (gol, asistencia, penal, tarjeta, autogol, portería a
+//      cero) se suman/restan sobre esos PUNTOS, no sobre el rating.
+//   3) el total de puntos se vuelve a pasar por la MISMA tabla al revés
+//      (puntosANota) para sacar la nota final que se muestra — el número
+//      que se ve es el piso (mínimo) del tramo que le corresponde a esos
+//      puntos, ej. 9 puntos cae en el tramo "7.8-7.9 → 9 puntos", así que
+//      la nota mostrada es 7.8.
+// Como los puntos de la tabla son enteros de -4 a 14, y los bonos también
+// son todos enteros, el total SIEMPRE cae justo en algún tramo — nunca hace
+// falta redondear. El piso (nota 0.0, tramo de -4 puntos) y el techo (nota
+// 10.0, tramo de 14 puntos) salen solos de los bordes de la propia tabla,
+// sin necesidad de un clamp aparte.
+const TABLA_RATING_PUNTOS = [
+  { rating: 0.0, puntos: -4 },
+  { rating: 4.6, puntos: -3 },
+  { rating: 5.0, puntos: -2 },
+  { rating: 5.8, puntos: -1 },
+  { rating: 6.0, puntos: 0 },
+  { rating: 6.2, puntos: 1 },
+  { rating: 6.4, puntos: 2 },
+  { rating: 6.6, puntos: 3 },
+  { rating: 6.8, puntos: 4 },
+  { rating: 7.0, puntos: 5 },
+  { rating: 7.2, puntos: 6 },
+  { rating: 7.4, puntos: 7 },
+  { rating: 7.6, puntos: 8 },
+  { rating: 7.8, puntos: 9 },
+  { rating: 8.0, puntos: 10 },
+  { rating: 8.5, puntos: 11 },
+  { rating: 9.0, puntos: 12 },
+  { rating: 9.5, puntos: 13 },
+  { rating: 10.0, puntos: 14 },
+];
+
+// Último tramo cuyo `campo` sea <= valor (a pedido: "cuando el jugador está
+// en el rango 6,1-6,2 dale el menor rango" — cualquier valor que caiga en un
+// hueco entre dos tramos, o justo en el borde, se queda con el tramo de
+// ABAJO). Sirve para los dos sentidos: rating->puntos (campo='rating') y
+// puntos->nota (campo='puntos', ahí se lee `rating` del tramo encontrado).
+function ultimoTramoQueCalce(valor, campo) {
+  let elegido = TABLA_RATING_PUNTOS[0];
+  for (const tramo of TABLA_RATING_PUNTOS) {
+    if (valor >= tramo[campo]) elegido = tramo; else break;
+  }
+  return elegido;
+}
+function ratingAPuntos(rating) {
   if (rating == null || Number.isNaN(rating)) return null;
-  return Math.max(3, Math.min(10, rating));
+  const r = Math.max(0, Math.min(10, rating));
+  return ultimoTramoQueCalce(r, 'rating').puntos;
+}
+function puntosANota(puntos) {
+  const p = Math.max(-4, Math.min(14, puntos));
+  return ultimoTramoQueCalce(p, 'puntos').rating;
 }
 
 // Bono de gol según posición (captura 2, "Goles: Portero +6, Defensa +5,
@@ -709,7 +754,7 @@ function calcularNotaDemaster({
   rating, posicion, golesTotal, penalScored, asistencias, penalMissed,
   penalSaved, golesConcedidos, minutos, dobleAmarilla, rojaDirecta, autogoles,
 }) {
-  const base = basePorRating(rating);
+  const base = ratingAPuntos(rating);
   if (base == null) return null; // sin rating -> no jugó lo suficiente, no se calcula
 
   let puntos = base;
@@ -729,11 +774,7 @@ function calcularNotaDemaster({
   // del equipo, para que valga aunque haya entrado de cambio.
   if (posicion === 'G' && (minutos || 0) > 0 && (golesConcedidos || 0) === 0) puntos += 1;
 
-  // Piso de 0 en la nota FINAL (a pedido: "hay jugadores con nota 1 y otros
-  // con nota 0") — la base nunca baja de 3, pero los descuentos (roja,
-  // autogol, penal fallado, doble amarilla) pueden restar lo suficiente
-  // como para dejarla en 0 o 1 en un partido malo de verdad. Nunca negativa.
-  return Math.max(0, Math.round(puntos * 10) / 10);
+  return puntosANota(puntos);
 }
 
 // /fixtures/players?fixture=ID trae, por jugador, el bloque "statistics" con
