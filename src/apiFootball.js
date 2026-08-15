@@ -678,38 +678,21 @@ async function obtenerPosicionesDeLiga(leagueId, season) {
 // probable) — antes de eso no hay minutos ni rating que traer.
 // ============================================================
 
-// Tabla de conversión rating -> puntos base (captura 2, columna izquierda).
-const TABLA_PUNTOS_RATING = [
-  { min: 0.0, max: 4.5, puntos: -4 },
-  { min: 4.6, max: 4.9, puntos: -3 },
-  { min: 5.0, max: 5.7, puntos: -2 },
-  { min: 5.8, max: 5.9, puntos: -1 },
-  { min: 6.0, max: 6.1, puntos: 0 },
-  { min: 6.2, max: 6.3, puntos: 1 },
-  { min: 6.4, max: 6.5, puntos: 2 },
-  { min: 6.6, max: 6.7, puntos: 3 },
-  { min: 6.8, max: 6.9, puntos: 4 },
-  { min: 7.0, max: 7.1, puntos: 5 },
-  { min: 7.2, max: 7.3, puntos: 6 },
-  { min: 7.4, max: 7.5, puntos: 7 },
-  { min: 7.6, max: 7.7, puntos: 8 },
-  { min: 7.8, max: 7.9, puntos: 9 },
-  { min: 8.0, max: 8.4, puntos: 10 },
-  { min: 8.5, max: 8.9, puntos: 11 },
-  { min: 9.0, max: 9.4, puntos: 12 },
-  { min: 9.5, max: 9.9, puntos: 13 },
-  { min: 10.0, max: 10.0, puntos: 14 },
-];
-function puntosPorRating(rating) {
+// CORREGIDO (a pedido, bug reportado con datos reales de San Lorenzo-Unión:
+// "tiene que mostrar la nota entre 3 y 10, no ese puntaje" — un rating
+// normal de 6.0 mostraba "0.0" porque pasaba por la tabla de conversión a
+// PUNTOS de Comunio, que es una escala de puntos de fantasy (-4 a +14, para
+// sumar toda una fecha), no una nota de partido). La nota de Demaster.app es
+// eso, una NOTA — así que la base es el rating tal cual (clampeado a 3-10,
+// que es el rango real en el que se mueve API-Football salvo casos
+// rarísimos), sin pasarlo por ninguna tabla. Los bonos de "puntos extra"
+// (goles, asistencias, tarjetas, etc.) se suman/restan directo sobre esa
+// nota — así un partido sin nada especial queda con un número que se lee
+// como cualquier nota de fútbol, y un partidazo con gol la puede empujar
+// por encima de 10.
+function basePorRating(rating) {
   if (rating == null || Number.isNaN(rating)) return null;
-  // Piso de 3 (a pedido: "la nota mínima es 3 y la max es 10") — el rating
-  // que manda API-Football en la práctica no baja de ~3 salvo casos
-  // rarísimos; se clampea acá para no leer de más un dato raro de la API.
-  // Esto es la BASE nomás: la nota FINAL (después de goles/tarjetas/etc.)
-  // sí puede terminar en 0 o 1 — ver el piso al final de calcularNotaDemaster.
-  const r = Math.max(3, Math.min(10, rating));
-  const tramo = TABLA_PUNTOS_RATING.find((t) => r >= t.min && r <= t.max);
-  return tramo ? tramo.puntos : 0;
+  return Math.max(3, Math.min(10, rating));
 }
 
 // Bono de gol según posición (captura 2, "Goles: Portero +6, Defensa +5,
@@ -726,7 +709,7 @@ function calcularNotaDemaster({
   rating, posicion, golesTotal, penalScored, asistencias, penalMissed,
   penalSaved, golesConcedidos, minutos, dobleAmarilla, rojaDirecta, autogoles,
 }) {
-  const base = puntosPorRating(rating);
+  const base = basePorRating(rating);
   if (base == null) return null; // sin rating -> no jugó lo suficiente, no se calcula
 
   let puntos = base;
@@ -747,9 +730,9 @@ function calcularNotaDemaster({
   if (posicion === 'G' && (minutos || 0) > 0 && (golesConcedidos || 0) === 0) puntos += 1;
 
   // Piso de 0 en la nota FINAL (a pedido: "hay jugadores con nota 1 y otros
-  // con nota 0") — la base ya no baja de -4 (rating clampeado a 3 más
-  // arriba), pero los descuentos (roja, autogol, penal fallado...) pueden
-  // seguir restando hasta dejarla en 0 o 1 en partidos malos. Nunca negativa.
+  // con nota 0") — la base nunca baja de 3, pero los descuentos (roja,
+  // autogol, penal fallado, doble amarilla) pueden restar lo suficiente
+  // como para dejarla en 0 o 1 en un partido malo de verdad. Nunca negativa.
   return Math.max(0, Math.round(puntos * 10) / 10);
 }
 
