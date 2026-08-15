@@ -661,6 +661,145 @@ async function obtenerPosicionesDeLiga(leagueId, season) {
   };
 }
 
+// ============================================================
+// NOTA DEMASTER.APP (a pedido: "agregar a cada jugador de los partidos una
+// nota demaster.app" — sistema calcado del de Comunio, mostrado en las 3
+// capturas que mandó Pablo). Dos capas:
+//
+//  1) Una base según el rating de 0 a 10 que ya trae API-Football por
+//     jugador y partido (mismo concepto que la nota de SofaScore que usa
+//     Comunio — no es SofaScore, pero se lee igual y se pasa por la MISMA
+//     tabla de conversión a puntos que la captura 2).
+//  2) Bonos/descuentos discretos encima: gol según posición, asistencia,
+//     penales, tarjetas, autogol, portería a cero — igual que "Puntos
+//     extra" de la captura 2.
+//
+// Solo se calcula cuando el partido YA ARRANCÓ (alineación oficial, no
+// probable) — antes de eso no hay minutos ni rating que traer.
+// ============================================================
+
+// Tabla de conversión rating -> puntos base (captura 2, columna izquierda).
+const TABLA_PUNTOS_RATING = [
+  { min: 0.0, max: 4.5, puntos: -4 },
+  { min: 4.6, max: 4.9, puntos: -3 },
+  { min: 5.0, max: 5.7, puntos: -2 },
+  { min: 5.8, max: 5.9, puntos: -1 },
+  { min: 6.0, max: 6.1, puntos: 0 },
+  { min: 6.2, max: 6.3, puntos: 1 },
+  { min: 6.4, max: 6.5, puntos: 2 },
+  { min: 6.6, max: 6.7, puntos: 3 },
+  { min: 6.8, max: 6.9, puntos: 4 },
+  { min: 7.0, max: 7.1, puntos: 5 },
+  { min: 7.2, max: 7.3, puntos: 6 },
+  { min: 7.4, max: 7.5, puntos: 7 },
+  { min: 7.6, max: 7.7, puntos: 8 },
+  { min: 7.8, max: 7.9, puntos: 9 },
+  { min: 8.0, max: 8.4, puntos: 10 },
+  { min: 8.5, max: 8.9, puntos: 11 },
+  { min: 9.0, max: 9.4, puntos: 12 },
+  { min: 9.5, max: 9.9, puntos: 13 },
+  { min: 10.0, max: 10.0, puntos: 14 },
+];
+function puntosPorRating(rating) {
+  if (rating == null || Number.isNaN(rating)) return null;
+  const r = Math.max(0, Math.min(10, rating));
+  const tramo = TABLA_PUNTOS_RATING.find((t) => r >= t.min && r <= t.max);
+  return tramo ? tramo.puntos : 0;
+}
+
+// Bono de gol según posición (captura 2, "Goles: Portero +6, Defensa +5,
+// Medio +4, Delantero +3"). API-Football manda la posición como una letra
+// (G/D/M/F) tanto en la alineación como en las estadísticas del jugador.
+const BONUS_GOL_POR_POSICION = { G: 6, D: 5, M: 4, F: 3 };
+
+// `golesTotal`/`penalScored` vienen de /fixtures/players (ver
+// obtenerEstadisticasJugadores). Un gol de penal cuenta el bono de posición
+// COMPLETO más el bono de penal aparte (así lo separa la propia captura:
+// "Goles: Delantero +3 ... Penalti: +3" son dos líneas distintas, no una
+// alternativa a la otra) — un delantero que convierte un penal suma +3+3=+6.
+function calcularNotaDemaster({
+  rating, posicion, golesTotal, penalScored, asistencias, penalMissed,
+  penalSaved, golesConcedidos, minutos, dobleAmarilla, rojaDirecta, autogoles,
+}) {
+  const base = puntosPorRating(rating);
+  if (base == null) return null; // sin rating -> no jugó lo suficiente, no se calcula
+
+  let puntos = base;
+  const bonusGol = BONUS_GOL_POR_POSICION[posicion] ?? BONUS_GOL_POR_POSICION.F;
+  const golesPenal = Math.min(penalScored || 0, golesTotal || 0);
+  const golesAbiertos = Math.max((golesTotal || 0) - golesPenal, 0);
+  puntos += golesAbiertos * bonusGol;
+  puntos += golesPenal * (bonusGol + 3);
+  puntos += (asistencias || 0) * 1;
+  puntos += (penalMissed || 0) * -2;
+  puntos += (penalSaved || 0) * 3;
+  puntos += (autogoles || 0) * -2;
+  if (dobleAmarilla) puntos += -2;
+  if (rojaDirecta) puntos += -4;
+  // Portería a cero (captura 2: solo arquero, +1) — usa goals.conceded del
+  // propio jugador (lo que le entró mientras estuvo en cancha), no el total
+  // del equipo, para que valga aunque haya entrado de cambio.
+  if (posicion === 'G' && (minutos || 0) > 0 && (golesConcedidos || 0) === 0) puntos += 1;
+
+  return Math.round(puntos * 10) / 10;
+}
+
+// /fixtures/players?fixture=ID trae, por jugador, el bloque "statistics" con
+// rating/posición/minutos + goles/asistencias/penales/tarjetas de ESE
+// partido puntual — es el endpoint que le falta a esta app para calcular la
+// nota (hasta ahora solo se usaba /fixtures?id= para la alineación, que NO
+// trae estadísticas, solo nombre/número/posición/grid).
+async function obtenerEstadisticasJugadores(fixtureId) {
+  const mapa = new Map();
+  if (!fixtureId) return mapa;
+  const resp = await fetch(`${BASE}/fixtures/players?fixture=${fixtureId}`, { headers });
+  const data = await resp.json();
+  const errores = data?.errors;
+  const hayError = errores && (Array.isArray(errores) ? errores.length > 0 : Object.keys(errores).length > 0);
+  if (!resp.ok || hayError) {
+    console.error(`[obtenerEstadisticasJugadores] Fixture ${fixtureId}: la API devolvió un error — status ${resp.status}, errors:`, errores);
+    return mapa;
+  }
+  (data?.response || []).forEach((equipo) => {
+    (equipo.players || []).forEach((p) => {
+      const id = p.player?.id;
+      const s = p.statistics?.[0];
+      if (id == null || !s) return;
+      const ratingCrudo = s.games?.rating;
+      mapa.set(id, {
+        rating: ratingCrudo != null ? parseFloat(ratingCrudo) : null,
+        posicion: s.games?.position || null,
+        minutos: s.games?.minutes ?? 0,
+        golesTotal: s.goals?.total ?? 0,
+        asistencias: s.goals?.assists ?? 0,
+        golesConcedidos: s.goals?.conceded ?? 0,
+        penalScored: s.penalty?.scored ?? 0,
+        penalMissed: s.penalty?.missed ?? 0,
+        penalSaved: s.penalty?.saved ?? 0,
+      });
+    });
+  });
+  return mapa;
+}
+
+// Doble amarilla / roja directa / autogol por jugador, a partir de la misma
+// lista `eventos` que ya arma obtenerDetalleFixture (evita pedir el partido
+// de nuevo). Se usa el texto crudo `detalle` (no la `clase` ya simplificada)
+// porque "Second Yellow card" y "Red Card" necesitan tratamiento DISTINTO acá
+// (-2 vs -4) aunque en el resumen del partido las dos se pinten como roja.
+function marcasDisciplinariasPorJugador(eventos) {
+  const dobleAmarilla = new Set();
+  const rojaDirecta = new Set();
+  const autogoles = new Map();
+  (eventos || []).forEach((ev) => {
+    if (ev.jugadorId == null) return;
+    if (ev.detalle === 'Second Yellow card') dobleAmarilla.add(ev.jugadorId);
+    else if (ev.detalle === 'Red Card') rojaDirecta.add(ev.jugadorId);
+    else if (ev.clase === 'autogol') autogoles.set(ev.jugadorId, (autogoles.get(ev.jugadorId) || 0) + 1);
+  });
+  return { dobleAmarilla, rojaDirecta, autogoles };
+}
+
 // ---------- Alineación PROBABLE (a pedido: "cuando el partido no ha
 // empezado, cargar aquí las alineaciones probables, la última alineación
 // que jugó el equipo") ----------
@@ -803,18 +942,57 @@ async function obtenerDetalleFixture(fixtureId) {
     }))
     .sort((a, b) => a.orden - b.orden);
 
-  // El id de cada jugador vale doble: sirve para cruzar los eventos (goles,
-  // tarjetas, cambios) con su ficha en la cancha, y para armar la URL de su
-  // foto en el CDN de API-Football —
-  // https://media.api-sports.io/football/players/<id>.png — que es un
-  // archivo estático y NO consume cuota de la API.
-  const armarJugador = (x) => ({
-    id: x.player?.id ?? null,
-    nombre: x.player?.name || '',
-    numero: x.player?.number ?? null,
-    posicion: x.player?.pos || null,
-    grid: x.player?.grid || null,
-  });
+  // Alineación PROBABLE (a pedido): si el partido todavía no arrancó,
+  // API-Football todavía no publicó la oficial — se completa con la última
+  // alineación jugada por cada equipo (ver obtenerAlineacionProbable más
+  // arriba). Se calcula ACÁ arriba (antes de armar jugadores) porque
+  // `partidoNoArranco` también decide si tiene sentido pedir estadísticas
+  // para la nota Demaster.app (ver bloque siguiente): sin alineación
+  // oficial no hay minutos/rating que traer todavía.
+  const idVisita = fx.teams?.away?.id;
+  const estadoCorto = fx.fixture?.status?.short || null;
+  const partidoNoArranco = ['NS', 'TBD', 'PST'].includes(estadoCorto);
+
+  // Nota Demaster.app (a pedido: "agregar a cada jugador de los partidos una
+  // nota demaster.app en base a esto" — sistema de Comunio, ver
+  // calcularNotaDemaster más arriba). Se pide UNA vez para todo el partido
+  // (no por jugador) y se cruza acá con cada ficha.
+  const statsJugadores = partidoNoArranco ? new Map() : await obtenerEstadisticasJugadores(fixtureId);
+  const marcasDisciplinarias = marcasDisciplinariasPorJugador(eventos);
+
+  // El id de cada jugador vale triple: cruza los eventos (goles, tarjetas,
+  // cambios) con su ficha en la cancha, arma la URL de su foto en el CDN de
+  // API-Football (media.api-sports.io/football/players/<id>.png, estático,
+  // no gasta cuota), y cruza con `statsJugadores` para la nota.
+  const armarJugador = (x) => {
+    const id = x.player?.id ?? null;
+    const posicion = x.player?.pos || null;
+    const stats = id != null ? statsJugadores.get(id) : null;
+    const notaDemaster = stats && stats.rating != null
+      ? calcularNotaDemaster({
+          rating: stats.rating,
+          posicion: posicion || stats.posicion,
+          golesTotal: stats.golesTotal,
+          asistencias: stats.asistencias,
+          golesConcedidos: stats.golesConcedidos,
+          minutos: stats.minutos,
+          penalScored: stats.penalScored,
+          penalMissed: stats.penalMissed,
+          penalSaved: stats.penalSaved,
+          dobleAmarilla: marcasDisciplinarias.dobleAmarilla.has(id),
+          rojaDirecta: marcasDisciplinarias.rojaDirecta.has(id),
+          autogoles: marcasDisciplinarias.autogoles.get(id) || 0,
+        })
+      : null;
+    return {
+      id,
+      nombre: x.player?.name || '',
+      numero: x.player?.number ?? null,
+      posicion,
+      grid: x.player?.grid || null,
+      notaDemaster,
+    };
+  };
 
   const armarAlineacion = (l) => l ? {
     equipoId: l.team?.id ?? null,
@@ -838,13 +1016,6 @@ async function obtenerDetalleFixture(fixtureId) {
   let alineacionLocal = armarAlineacion(lineups.find((l) => l.team?.id === idLocal));
   let alineacionVisita = armarAlineacion(lineups.find((l) => l.team?.id !== idLocal));
 
-  // Alineación PROBABLE (a pedido): si el partido todavía no arrancó y
-  // API-Football no publicó la alineación oficial todavía, se completa con
-  // la última alineación jugada por cada equipo (ver
-  // obtenerAlineacionProbable más arriba).
-  const idVisita = fx.teams?.away?.id;
-  const estadoCorto = fx.fixture?.status?.short || null;
-  const partidoNoArranco = ['NS', 'TBD', 'PST'].includes(estadoCorto);
   if (partidoNoArranco) {
     if (!alineacionLocal && idLocal) {
       alineacionLocal = await obtenerAlineacionProbable(idLocal);
