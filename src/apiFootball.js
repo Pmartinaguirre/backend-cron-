@@ -1278,4 +1278,8 @@ async function obtenerFichaClub(teamId) {
   return ficha;
 }
 
-module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerDatosVenuePorNombre, obtenerVenueDeEquipo, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture, obtenerFichaJugador, obtenerFichaClub, obtenerPerfilBasicoJugador, obtenerHeadToHead, obtenerLesionados };
+module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerDatosVenuePorNombre, obtenerVenueDeEquipo, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture, obtenerFichaJugador, obtenerFichaClub, obtenerPerfilBasicoJugador, obtenerHeadToHead, obtenerLesionados,
+  // Exportados para /diagnostico-partido (a pedido: "veamos el cálculo de
+  // ese partido en particular para ver dónde está el error") — sin esto no
+  // hay forma de ver desde afuera los números CRUDOS que arma la nota.
+  obtenerEstadisticasJugadores, calcularNotaDemaster, marcasDisciplinariasPorJugador };

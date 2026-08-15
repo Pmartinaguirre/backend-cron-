@@ -9,6 +9,7 @@
 // Sin exigirSecreto (mismo criterio que /diagnostico-cobertura): de solo
 // lectura, pensado para pegarle directo desde el navegador.
 const { TEMPORADA, leagueIdDeCompetencia } = require('../ligas');
+const { obtenerEstadisticasJugadores } = require('../apiFootball');
 
 const API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY;
 const BASE = 'https://v3.football.api-sports.io';
@@ -28,10 +29,44 @@ async function rutaDiagnosticoPartido(req, res) {
       if (!fx) {
         return res.json({ fixtureId, mensaje: `API-Football no devolvió ningún fixture con id ${fixtureId}.`, crudo: data });
       }
+
+      // Nota Demaster.app (a pedido: "veamos el cálculo de ese partido en
+      // particular para ver dónde está el error"): se pide el mismo
+      // /fixtures/players que usa obtenerDetalleFixture, pero acá se
+      // devuelve CRUDO (rating, goles, minutos, posición tal cual los manda
+      // la API) para poder comparar a ojo si el número que ve el jugador en
+      // la cancha corresponde a lo que de verdad mandó API-Football, o si el
+      // problema está en cómo se cruza/calcula acá.
+      const idLocal = fx.teams?.home?.id;
+      const statsJugadores = await obtenerEstadisticasJugadores(fixtureId);
+      const jugadoresPorEquipo = (fx.lineups || []).map((l) => ({
+        equipo: l.team?.name || '',
+        esLocal: l.team?.id === idLocal,
+        titulares: (l.startXI || []).map((x) => {
+          const id = x.player?.id ?? null;
+          const s = id != null ? statsJugadores.get(id) : null;
+          return {
+            id,
+            nombre: x.player?.name || '',
+            posicionLineup: x.player?.pos || null,
+            statsCrudas: s || 'SIN estadísticas de /fixtures/players para este id',
+          };
+        }),
+        suplentesQueEntraron: (l.substitutes || [])
+          .map((x) => {
+            const id = x.player?.id ?? null;
+            const s = id != null ? statsJugadores.get(id) : null;
+            return s && (s.minutos || 0) > 0 ? { id, nombre: x.player?.name || '', statsCrudas: s } : null;
+          })
+          .filter(Boolean),
+      }));
+
       return res.json({
         fixtureId,
         local: fx.teams?.home?.name || null,
         visita: fx.teams?.away?.name || null,
+        golesLocal: fx.goals?.home ?? null,
+        golesVisita: fx.goals?.away ?? null,
         liga: fx.league?.name || null,
         ronda: fx.league?.round || null,
         estado: fx.fixture?.status?.short || null,
@@ -40,6 +75,7 @@ async function rutaDiagnosticoPartido(req, res) {
         estadioId: fx.fixture?.venue?.id || null,
         estadioCiudad: fx.fixture?.venue?.city || null,
         arbitro: fx.fixture?.referee || null,
+        jugadoresPorEquipo,
       });
     } catch (e) {
       console.error(`[/diagnostico-partido] Error con fixtureId ${fixtureId}:`, e);
