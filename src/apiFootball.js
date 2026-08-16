@@ -809,6 +809,11 @@ async function obtenerEstadisticasJugadores(fixtureId) {
         penalScored: s.penalty?.scored ?? 0,
         penalMissed: s.penalty?.missed ?? 0,
         penalSaved: s.penalty?.saved ?? 0,
+        // Capitán (a pedido: "agrega el capitan ese dato si lo manda con una
+        // (c) en las alineaciones") — sí lo manda, en games.captain, un
+        // booleano propio de este partido puntual (no es un dato fijo del
+        // jugador: el capitán puede cambiar partido a partido).
+        capitan: s.games?.captain ?? false,
       });
     });
   });
@@ -1030,6 +1035,16 @@ async function obtenerDetalleFixture(fixtureId) {
       posicion,
       grid: x.player?.grid || null,
       notaDemaster,
+      // Capitán (a pedido: "agrega el capitan ese dato si lo manda con una
+      // (c) en las alineaciones") — sale de /fixtures/players (ver
+      // obtenerEstadisticasJugadores), por eso solo se sabe una vez que el
+      // partido arrancó y hay stats; antes de eso (alineación probable)
+      // queda en false, ya que ese dato es específico de ESTE partido.
+      capitan: stats?.capitan || false,
+      // Jugador destacado del partido (ver más abajo, después de armar las
+      // dos alineaciones) — arranca en false acá, se corrige a true en el
+      // ganador una vez que se conocen todas las notas del partido.
+      destacado: false,
     };
   };
 
@@ -1066,6 +1081,32 @@ async function obtenerDetalleFixture(fixtureId) {
 
   const estadisticas = extraerEstadisticas(fx, idLocal);
 
+  // JUGADOR DESTACADO / MVP del partido (a pedido: "el jugador del partido
+  // me parece que lo informa la api, debes marcarlo en alineaciones con un
+  // icono destacado" — se revisó con /diagnostico-partido el objeto CRUDO
+  // que manda /fixtures/players y API-Football NO trae ningún campo propio
+  // de "jugador destacado"/MVP, así que se calcula acá: uno solo por
+  // partido, el de mayor notaDemaster entre los dos equipos, titular o
+  // suplente que haya entrado (confirmado con Pablo — la otra opción era
+  // uno por equipo). Ante empate gana el primero encontrado.
+  let jugadorDestacadoId = null;
+  const todosLosJugadores = [
+    ...(alineacionLocal?.titulares || []),
+    ...(alineacionLocal?.suplentes || []),
+    ...(alineacionVisita?.titulares || []),
+    ...(alineacionVisita?.suplentes || []),
+  ];
+  let mejorNota = null;
+  todosLosJugadores.forEach((j) => {
+    if (j.notaDemaster != null && (mejorNota == null || j.notaDemaster > mejorNota)) {
+      mejorNota = j.notaDemaster;
+      jugadorDestacadoId = j.id;
+    }
+  });
+  if (jugadorDestacadoId != null) {
+    todosLosJugadores.forEach((j) => { j.destacado = j.id === jugadorDestacadoId; });
+  }
+
   return {
     equipoLocal: fx.teams?.home?.name || '',
     equipoVisita: fx.teams?.away?.name || '',
@@ -1078,6 +1119,7 @@ async function obtenerDetalleFixture(fixtureId) {
     alineacionLocal,
     alineacionVisita,
     estadisticas,
+    jugadorDestacadoId,
   };
 }
 
