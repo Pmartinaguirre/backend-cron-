@@ -40,6 +40,26 @@ async function rutaDiagnosticoPartido(req, res) {
       const idLocal = fx.teams?.home?.id;
       const statsJugadores = await obtenerEstadisticasJugadores(fixtureId);
 
+      // Muestra CRUDA sin recortar (a pedido: "el jugador del partido me
+      // parece que lo informa la api" — antes de armar nada, hay que
+      // confirmar si /fixtures/players de verdad manda un campo tipo
+      // "jugador destacado"/MVP, porque obtenerEstadisticasJugadores solo
+      // guarda un subconjunto de campos (rating/posición/goles/etc para la
+      // nota) y podría estar descartando algo sin darnos cuenta). Se pide
+      // un jugador completo de cada equipo, tal cual lo manda la API, sin
+      // pasar por ningún mapeo nuestro.
+      let ejemploCompletoJugador = null;
+      try {
+        const respPlayers = await fetch(`${BASE}/fixtures/players?fixture=${fixtureId}`, { headers });
+        const dataPlayers = await respPlayers.json();
+        ejemploCompletoJugador = (dataPlayers?.response || []).map((equipo) => ({
+          equipo: equipo.team?.name || '',
+          primerJugadorCrudo: equipo.players?.[0] || null,
+        }));
+      } catch (e) {
+        ejemploCompletoJugador = `Error pidiendo /fixtures/players crudo: ${e.message}`;
+      }
+
       // Doble amarilla / roja directa / autogol, calculado directo de los
       // eventos CRUDOS (mismo criterio que marcasDisciplinariasPorJugador
       // en apiFootball.js, pero sin pasar por el mapeo de obtenerDetalleFixture
@@ -131,6 +151,7 @@ async function rutaDiagnosticoPartido(req, res) {
         estadioCiudad: fx.fixture?.venue?.city || null,
         arbitro: fx.fixture?.referee || null,
         jugadoresPorEquipo,
+        ejemploCompletoJugador,
       });
     } catch (e) {
       console.error(`[/diagnostico-partido] Error con fixtureId ${fixtureId}:`, e);
