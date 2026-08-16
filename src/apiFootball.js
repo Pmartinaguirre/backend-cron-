@@ -998,17 +998,16 @@ async function obtenerDetalleFixture(fixtureId) {
   // API-Football (media.api-sports.io/football/players/<id>.png, estático,
   // no gasta cuota), y cruza con `statsJugadores` para la nota.
   //
-  // `esTitular` (a pedido: "los jugadores que entraron desde la banca no
-  // tienen nota puesta") — la nota SOLO se calcula para el once inicial, no
-  // para los que entraron de cambio, sin importar cuántos minutos jugaron.
-  // Y aun siendo titular, hace falta un mínimo de 10 minutos en cancha (a
-  // pedido: "el tiempo mínimo para darle a un jugador una nota es 10
-  // minutos") — un titular sacado a los 5' por lesión tampoco recibe nota.
-  const armarJugador = (x, esTitular) => {
+  // CORREGIDO (a pedido: "falta agregar las notas a los jugadores que
+  // entraron al partido en los cambios... misma lógica, más de 10 min en
+  // cancha para tener nota") — antes se excluía a todo el que entrara de
+  // cambio sin importar los minutos; ahora la única condición es haber
+  // jugado 10 minutos o más, sea titular o suplente que entró.
+  const armarJugador = (x) => {
     const id = x.player?.id ?? null;
     const posicion = x.player?.pos || null;
     const stats = id != null ? statsJugadores.get(id) : null;
-    const notaDemaster = esTitular && stats && stats.rating != null && (stats.minutos || 0) >= 10
+    const notaDemaster = stats && stats.rating != null && (stats.minutos || 0) >= 10
       ? calcularNotaDemaster({
           rating: stats.rating,
           posicion: posicion || stats.posicion,
@@ -1048,8 +1047,8 @@ async function obtenerDetalleFixture(fixtureId) {
     // corrido, por ejemplo). API-Football no siempre lo manda —en ligas
     // chicas suele venir null—, así que el frontend cae al string de
     // formación cuando falta.
-    titulares: (l.startXI || []).map((x) => armarJugador(x, true)),
-    suplentes: (l.substitutes || []).map((x) => armarJugador(x, false)),
+    titulares: (l.startXI || []).map(armarJugador),
+    suplentes: (l.substitutes || []).map(armarJugador),
   } : null;
 
   const lineups = fx.lineups || [];

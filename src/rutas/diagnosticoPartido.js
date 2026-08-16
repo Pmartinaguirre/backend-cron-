@@ -86,11 +86,32 @@ async function rutaDiagnosticoPartido(req, res) {
             statsCrudas: s || 'SIN estadísticas de /fixtures/players para este id',
           };
         }),
+        // Ahora también con nota (a pedido: "falta agregar las notas a los
+        // jugadores que entraron al partido en los cambios... misma lógica,
+        // más de 10 min en cancha") — mismo cálculo que los titulares.
         suplentesQueEntraron: (l.substitutes || [])
           .map((x) => {
             const id = x.player?.id ?? null;
             const s = id != null ? statsJugadores.get(id) : null;
-            return s && (s.minutos || 0) > 0 ? { id, nombre: x.player?.name || '', statsCrudas: s } : null;
+            if (!s || (s.minutos || 0) <= 0) return null;
+            const posicion = x.player?.pos || s.posicion || null;
+            const notaDemaster = s.rating != null && (s.minutos || 0) >= 10
+              ? calcularNotaDemaster({
+                  rating: s.rating,
+                  posicion,
+                  golesTotal: s.golesTotal,
+                  asistencias: s.asistencias,
+                  golesConcedidos: s.golesConcedidos,
+                  minutos: s.minutos,
+                  penalScored: s.penalScored,
+                  penalMissed: s.penalMissed,
+                  penalSaved: s.penalSaved,
+                  dobleAmarilla: dobleAmarilla.has(id),
+                  rojaDirecta: rojaDirecta.has(id),
+                  autogoles: autogoles.get(id) || 0,
+                })
+              : null;
+            return { id, nombre: x.player?.name || '', notaDemaster, statsCrudas: s };
           })
           .filter(Boolean),
       }));
