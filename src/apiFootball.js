@@ -678,103 +678,23 @@ async function obtenerPosicionesDeLiga(leagueId, season) {
 // probable) — antes de eso no hay minutos ni rating que traer.
 // ============================================================
 
-// CORREGIDO DE NUEVO (a pedido: "encontré el error. Cuando un jugador suma
-// puntos extra esos puntos que gana van a la tabla de conversión, no
-// directo a su nota"). El mecanismo real, con el ejemplo que mandó (Auzmendi
-// 7.3 → tabla → 6 puntos, +3 de gol delantero → 9 puntos → tabla, vuelta →
-// nota 7.8) es de IDA Y VUELTA por la MISMA tabla:
-//   1) el rating crudo se convierte a PUNTOS por la tabla (ratingAPuntos).
-//   2) los bonos (gol, asistencia, penal, tarjeta, autogol, portería a
-//      cero) se suman/restan sobre esos PUNTOS, no sobre el rating.
-//   3) el total de puntos se vuelve a pasar por la MISMA tabla al revés
-//      (puntosANota) para sacar la nota final que se muestra — el número
-//      que se ve es el piso (mínimo) del tramo que le corresponde a esos
-//      puntos, ej. 9 puntos cae en el tramo "7.8-7.9 → 9 puntos", así que
-//      la nota mostrada es 7.8.
-// Como los puntos de la tabla son enteros de -4 a 14, y los bonos también
-// son todos enteros, el total SIEMPRE cae justo en algún tramo — nunca hace
-// falta redondear. El piso (nota 0.0, tramo de -4 puntos) y el techo (nota
-// 10.0, tramo de 14 puntos) salen solos de los bordes de la propia tabla,
-// sin necesidad de un clamp aparte.
-const TABLA_RATING_PUNTOS = [
-  { rating: 0.0, puntos: -4 },
-  { rating: 4.6, puntos: -3 },
-  { rating: 5.0, puntos: -2 },
-  { rating: 5.8, puntos: -1 },
-  { rating: 6.0, puntos: 0 },
-  { rating: 6.2, puntos: 1 },
-  { rating: 6.4, puntos: 2 },
-  { rating: 6.6, puntos: 3 },
-  { rating: 6.8, puntos: 4 },
-  { rating: 7.0, puntos: 5 },
-  { rating: 7.2, puntos: 6 },
-  { rating: 7.4, puntos: 7 },
-  { rating: 7.6, puntos: 8 },
-  { rating: 7.8, puntos: 9 },
-  { rating: 8.0, puntos: 10 },
-  { rating: 8.5, puntos: 11 },
-  { rating: 9.0, puntos: 12 },
-  { rating: 9.5, puntos: 13 },
-  { rating: 10.0, puntos: 14 },
-];
-
-// Último tramo cuyo `campo` sea <= valor (a pedido: "cuando el jugador está
-// en el rango 6,1-6,2 dale el menor rango" — cualquier valor que caiga en un
-// hueco entre dos tramos, o justo en el borde, se queda con el tramo de
-// ABAJO). Sirve para los dos sentidos: rating->puntos (campo='rating') y
-// puntos->nota (campo='puntos', ahí se lee `rating` del tramo encontrado).
-function ultimoTramoQueCalce(valor, campo) {
-  let elegido = TABLA_RATING_PUNTOS[0];
-  for (const tramo of TABLA_RATING_PUNTOS) {
-    if (valor >= tramo[campo]) elegido = tramo; else break;
-  }
-  return elegido;
-}
-function ratingAPuntos(rating) {
+// CAMBIO DE FONDO (a pedido, con la planilla de ratings del 15 de agosto
+// como evidencia: "con la tabla que me diste es evidente que el rating de
+// la api es el final, no hay que agregarle nada, solo poner el número de
+// cada jugador... la api ya discrimina por la cantidad de minutos mínimos,
+// así que si el jugador tiene el dato de su rating en la api lo imprimes").
+// Antes esta función convertía el rating a "puntos" por una tabla, le sumaba
+// bonos propios por gol/asistencia/tarjeta/penal/portería a cero, y volvía a
+// convertir a nota — calcado del sistema de puntos de Comunio. El caso
+// Tenaglia (rating 8.9, que YA traía su gol de defensor adentro, terminaba
+// en nota 10.0 al sumarle el bono de gol OTRA VEZ) mostró que el rating de
+// API-Football ya viene con las incidencias del partido reflejadas, así que
+// nuestros bonos estaban duplicando el efecto. Ahora la nota Demaster.app ES
+// el rating de la API, sin tocar — solo se redondea a 1 decimal por las
+// dudas de que venga con más precisión.
+function calcularNotaDemaster({ rating }) {
   if (rating == null || Number.isNaN(rating)) return null;
-  const r = Math.max(0, Math.min(10, rating));
-  return ultimoTramoQueCalce(r, 'rating').puntos;
-}
-function puntosANota(puntos) {
-  const p = Math.max(-4, Math.min(14, puntos));
-  return ultimoTramoQueCalce(p, 'puntos').rating;
-}
-
-// Bono de gol según posición (captura 2, "Goles: Portero +6, Defensa +5,
-// Medio +4, Delantero +3"). API-Football manda la posición como una letra
-// (G/D/M/F) tanto en la alineación como en las estadísticas del jugador.
-const BONUS_GOL_POR_POSICION = { G: 6, D: 5, M: 4, F: 3 };
-
-// `golesTotal`/`penalScored` vienen de /fixtures/players (ver
-// obtenerEstadisticasJugadores). Un gol de penal cuenta el bono de posición
-// COMPLETO más el bono de penal aparte (así lo separa la propia captura:
-// "Goles: Delantero +3 ... Penalti: +3" son dos líneas distintas, no una
-// alternativa a la otra) — un delantero que convierte un penal suma +3+3=+6.
-function calcularNotaDemaster({
-  rating, posicion, golesTotal, penalScored, asistencias, penalMissed,
-  penalSaved, golesConcedidos, minutos, dobleAmarilla, rojaDirecta, autogoles,
-}) {
-  const base = ratingAPuntos(rating);
-  if (base == null) return null; // sin rating -> no jugó lo suficiente, no se calcula
-
-  let puntos = base;
-  const bonusGol = BONUS_GOL_POR_POSICION[posicion] ?? BONUS_GOL_POR_POSICION.F;
-  const golesPenal = Math.min(penalScored || 0, golesTotal || 0);
-  const golesAbiertos = Math.max((golesTotal || 0) - golesPenal, 0);
-  puntos += golesAbiertos * bonusGol;
-  puntos += golesPenal * (bonusGol + 3);
-  puntos += (asistencias || 0) * 1;
-  puntos += (penalMissed || 0) * -2;
-  puntos += (penalSaved || 0) * 3;
-  puntos += (autogoles || 0) * -2;
-  if (dobleAmarilla) puntos += -2;
-  if (rojaDirecta) puntos += -4;
-  // Portería a cero (captura 2: solo arquero, +1) — usa goals.conceded del
-  // propio jugador (lo que le entró mientras estuvo en cancha), no el total
-  // del equipo, para que valga aunque haya entrado de cambio.
-  if (posicion === 'G' && (minutos || 0) > 0 && (golesConcedidos || 0) === 0) puntos += 1;
-
-  return puntosANota(puntos);
+  return Math.round(rating * 10) / 10;
 }
 
 // /fixtures/players?fixture=ID trae, por jugador, el bloque "statistics" con
@@ -1008,26 +928,33 @@ async function obtenerDetalleFixture(fixtureId) {
   // cancha para tener nota") — antes se excluía a todo el que entrara de
   // cambio sin importar los minutos; ahora la única condición es haber
   // jugado 10 minutos o más, sea titular o suplente que entró.
-  const armarJugador = (x) => {
+  // `esTitular` (a pedido, corrección: "cuando un jugador no tiene nota de
+  // la api dale el 6.5, que es la nota con la que parten todos los
+  // jugadores" — caso real: A. Manas, titular de Alavés, sin NINGÚN dato en
+  // /fixtures/players para ese partido, así que quedaba sin nota del todo).
+  // El 6.5 de arranque (mismo valor que usa Comunio, ver captura "Todos los
+  // jugadores empiezan los partidos con una nota de 6,5") solo se aplica a
+  // TITULARES sin rating — un titular salió a jugar, aunque a la API se le
+  // haya perdido el dato. Para SUPLENTES no se aplica: la mayoría de los que
+  // aparecen en `substitutes` nunca entraron a la cancha, y no hay forma de
+  // saber acá si el que falta en `statsJugadores` es uno que sí jugó (dato
+  // perdido, como Manas) o uno que se quedó en el banco (no jugó, no le
+  // corresponde nota) — mejor no inventar una nota a alguien que quizás ni
+  // pisó la cancha.
+  const armarJugador = (x, esTitular) => {
     const id = x.player?.id ?? null;
     const posicion = x.player?.pos || null;
     const stats = id != null ? statsJugadores.get(id) : null;
-    const notaDemaster = stats && stats.rating != null && (stats.minutos || 0) >= 10
-      ? calcularNotaDemaster({
-          rating: stats.rating,
-          posicion: posicion || stats.posicion,
-          golesTotal: stats.golesTotal,
-          asistencias: stats.asistencias,
-          golesConcedidos: stats.golesConcedidos,
-          minutos: stats.minutos,
-          penalScored: stats.penalScored,
-          penalMissed: stats.penalMissed,
-          penalSaved: stats.penalSaved,
-          dobleAmarilla: marcasDisciplinarias.dobleAmarilla.has(id),
-          rojaDirecta: marcasDisciplinarias.rojaDirecta.has(id),
-          autogoles: marcasDisciplinarias.autogoles.get(id) || 0,
-        })
-      : null;
+    // Ya no se filtra por minutos acá (a pedido: "la api ya discrimina por
+    // la cantidad de minutos mínimos, así que si el jugador tiene el dato
+    // de su rating en la api lo imprimes") — si API-Football mandó un
+    // rating es porque decidió que jugó lo suficiente; confiamos en eso.
+    let notaDemaster = null;
+    if (stats && stats.rating != null) {
+      notaDemaster = calcularNotaDemaster({ rating: stats.rating });
+    } else if (esTitular) {
+      notaDemaster = 6.5;
+    }
     return {
       id,
       nombre: x.player?.name || '',
@@ -1062,8 +989,8 @@ async function obtenerDetalleFixture(fixtureId) {
     // corrido, por ejemplo). API-Football no siempre lo manda —en ligas
     // chicas suele venir null—, así que el frontend cae al string de
     // formación cuando falta.
-    titulares: (l.startXI || []).map(armarJugador),
-    suplentes: (l.substitutes || []).map(armarJugador),
+    titulares: (l.startXI || []).map((x) => armarJugador(x, true)),
+    suplentes: (l.substitutes || []).map((x) => armarJugador(x, false)),
   } : null;
 
   const lineups = fx.lineups || [];
