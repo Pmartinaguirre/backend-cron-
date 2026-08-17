@@ -923,24 +923,35 @@ async function obtenerDetalleFixture(fixtureId) {
   // API-Football (media.api-sports.io/football/players/<id>.png, estático,
   // no gasta cuota), y cruza con `statsJugadores` para la nota.
   //
-  // CORREGIDO (a pedido: "falta agregar las notas a los jugadores que
-  // entraron al partido en los cambios... misma lógica, más de 10 min en
-  // cancha para tener nota") — antes se excluía a todo el que entrara de
-  // cambio sin importar los minutos; ahora la única condición es haber
-  // jugado 10 minutos o más, sea titular o suplente que entró.
-  // `esTitular` (a pedido, corrección: "cuando un jugador no tiene nota de
-  // la api dale el 6.5, que es la nota con la que parten todos los
-  // jugadores" — caso real: A. Manas, titular de Alavés, sin NINGÚN dato en
-  // /fixtures/players para ese partido, así que quedaba sin nota del todo).
-  // El 6.5 de arranque (mismo valor que usa Comunio, ver captura "Todos los
-  // jugadores empiezan los partidos con una nota de 6,5") solo se aplica a
-  // TITULARES sin rating — un titular salió a jugar, aunque a la API se le
-  // haya perdido el dato. Para SUPLENTES no se aplica: la mayoría de los que
-  // aparecen en `substitutes` nunca entraron a la cancha, y no hay forma de
-  // saber acá si el que falta en `statsJugadores` es uno que sí jugó (dato
-  // perdido, como Manas) o uno que se quedó en el banco (no jugó, no le
-  // corresponde nota) — mejor no inventar una nota a alguien que quizás ni
-  // pisó la cancha.
+  // `idsQueEntraron`: ids de los suplentes que SÍ pisaron la cancha (mismo
+  // cálculo que usa el frontend en JugadoresSinEntrar/CambiosDelPartido:
+  // el que entra en un evento "cambio" es `secundarioId`) — hace falta para
+  // saber a quién de los suplentes le corresponde el 6.5 de abajo. Al que
+  // se quedó en el banco sin jugar nunca no se le inventa nota.
+  const idsQueEntraron = new Set(
+    eventos.filter((ev) => ev.clase === 'cambio' && ev.secundarioId != null).map((ev) => ev.secundarioId)
+  );
+
+  // `hayDatosRating`: si NINGÚN jugador de todo el partido tiene rating,
+  // API-Football directamente no tiene datos de este partido (a pedido:
+  // "cuando la api no tiene el rating del partido no pongas nada de notas y
+  // tampoco imprimas el jugador del partido, no hay datos" — visto en
+  // Belgrano-Independiente Rivadavia y Newell's-Riestra, FT pero con
+  // stats.rating null para TODOS). En ese caso no se inventa ningún 6.5 —
+  // ni para titulares ni para los que entraron — para no simular datos que
+  // no existen. Con todos en null, jugadorDestacadoId más abajo también
+  // queda en null solo, así que el módulo "Jugador del partido" del
+  // frontend ya no se muestra sin tocar nada ahí.
+  const hayDatosRating = [...statsJugadores.values()].some((s) => s.rating != null);
+
+  // `esTitular` / `idsQueEntraron` (a pedido, corrección: "cuando un jugador
+  // no tiene nota de la api dale el 6.5... todos los jugadores que aparecen
+  // en la api tienen nota" — antes el 6.5 de arranque solo se aplicaba a
+  // titulares; ahora también a un suplente que entró y a quien se le perdió
+  // el rating individual, ej. A. Manas). El 6.5 (mismo valor que usa Comunio,
+  // "todos los jugadores empiezan los partidos con una nota de 6,5") NO se
+  // aplica a un suplente que nunca entró — no hay forma de saber si jugó o
+  // no, mejor no inventarle nota a quien quizás ni pisó la cancha.
   const armarJugador = (x, esTitular) => {
     const id = x.player?.id ?? null;
     const posicion = x.player?.pos || null;
@@ -952,7 +963,7 @@ async function obtenerDetalleFixture(fixtureId) {
     let notaDemaster = null;
     if (stats && stats.rating != null) {
       notaDemaster = calcularNotaDemaster({ rating: stats.rating });
-    } else if (esTitular) {
+    } else if (hayDatosRating && (esTitular || idsQueEntraron.has(id))) {
       notaDemaster = 6.5;
     }
     return {
