@@ -28,6 +28,12 @@ const { rutaDiagnosticoPartido } = require('./src/rutas/diagnosticoPartido');
 const { rutaDiagnosticoIds } = require('./src/rutas/diagnosticoIds');
 const { rutaGanadorSemanal } = require('./src/rutas/ganadorSemanal');
 const { rutaRankingGrupo } = require('./src/rutas/rankingGrupo');
+const {
+  rutaNotificarRegistro,
+  rutaNotificarInvitadoGrupo,
+  rutaNotificarGrupoCreado,
+  rutaNotificarGrupoActivado,
+} = require('./src/rutas/notificaciones');
 
 const app = express();
 // Necesario para leer req.body en /invitar-a-grupo (POST con JSON) — las
@@ -209,6 +215,21 @@ app.post('/invitar-a-grupo', permitirCorsInvitar, rutaInvitarAGrupo);
 // que adminId sea el admin de la mesa o de su sala).
 app.options('/enviar-resumen-mesa', permitirCorsInvitar, (req, res) => res.sendStatus(204));
 app.post('/enviar-resumen-mesa', permitirCorsInvitar, rutaEnviarResumenMesa);
+
+// Mails de "hitos" del jugador (a pedido: "armar el flujo básico de email
+// para los hitos de los jugadores" — registro, invitación a grupo, grupo
+// creado, grupo activado) — ver src/rutas/notificaciones.js. Mismo
+// criterio sin X-Cron-Secret que las dos rutas de arriba: las llama
+// directo el navegador del jugador, "fire and forget", nunca bloquean la
+// operación real si el mail falla.
+app.options('/notificar-registro', permitirCorsInvitar, (req, res) => res.sendStatus(204));
+app.post('/notificar-registro', permitirCorsInvitar, rutaNotificarRegistro);
+app.options('/notificar-invitado-grupo', permitirCorsInvitar, (req, res) => res.sendStatus(204));
+app.post('/notificar-invitado-grupo', permitirCorsInvitar, rutaNotificarInvitadoGrupo);
+app.options('/notificar-grupo-creado', permitirCorsInvitar, (req, res) => res.sendStatus(204));
+app.post('/notificar-grupo-creado', permitirCorsInvitar, rutaNotificarGrupoCreado);
+app.options('/notificar-grupo-activado', permitirCorsInvitar, (req, res) => res.sendStatus(204));
+app.post('/notificar-grupo-activado', permitirCorsInvitar, rutaNotificarGrupoActivado);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
