@@ -167,8 +167,12 @@ function huboRojaDeCancha(fx) {
     const eb = (b.time?.elapsed ?? 0) + (b.time?.extra ?? 0) / 100;
     return ea - eb;
   });
-  let rojaLocal = false;
-  let rojaVisita = false;
+  // CONTADOR, no booleano (a pedido: "cuando un equipo tiene dos tarjetas
+  // rojas en la mini tarjeta debes poner dos iconos de tarjeta roja,
+  // actualmente pones solo 1" — antes esto era true/false, así que un
+  // segundo expulsado del mismo equipo no sumaba nada nuevo).
+  let rojaLocal = 0;
+  let rojaVisita = 0;
   eventosOrdenados.forEach((ev) => {
     const esDelLocal = ev.team?.id === idLocal;
     const enCancha = esDelLocal ? enCanchaLocal : enCanchaVisita;
@@ -187,7 +191,7 @@ function huboRojaDeCancha(fx) {
           ? false // suplente conocido que nunca entró -> banca
           : true; // id no aparece en la alineación (dato inconsistente de la api) -> se asume cancha
       if (esDeCancha) {
-        if (esDelLocal) rojaLocal = true; else rojaVisita = true;
+        if (esDelLocal) rojaLocal += 1; else rojaVisita += 1;
       }
     }
   });
