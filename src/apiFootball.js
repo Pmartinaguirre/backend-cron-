@@ -1034,8 +1034,24 @@ async function obtenerDetalleFixture(fixtureId) {
     ...(alineacionVisita?.titulares || []),
     ...(alineacionVisita?.suplentes || []),
   ];
+
+  // Candidatos a destacado (a pedido, captura Limache 1-3 U. de Chile: "no
+  // puede ser el mejor jugador del partido uno del equipo que pierde,
+  // corregir" — salía elegido un jugador de Limache, el que perdió). Con
+  // ganador claro, se descarta directo al equipo que pierde de la elección;
+  // en empate (o sin marcador todavía) se sigue mirando a los dos equipos,
+  // como antes.
+  const golesLocalFinal = fx.goals?.home;
+  const golesVisitaFinal = fx.goals?.away;
+  const hayGanador = golesLocalFinal != null && golesVisitaFinal != null && golesLocalFinal !== golesVisitaFinal;
+  const candidatosDestacado = hayGanador
+    ? (golesLocalFinal > golesVisitaFinal
+        ? [...(alineacionLocal?.titulares || []), ...(alineacionLocal?.suplentes || [])]
+        : [...(alineacionVisita?.titulares || []), ...(alineacionVisita?.suplentes || [])])
+    : todosLosJugadores;
+
   let mejorNota = null;
-  todosLosJugadores.forEach((j) => {
+  candidatosDestacado.forEach((j) => {
     if (j.notaDemaster != null && (mejorNota == null || j.notaDemaster > mejorNota)) {
       mejorNota = j.notaDemaster;
       jugadorDestacadoId = j.id;
