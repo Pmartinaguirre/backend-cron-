@@ -33,13 +33,21 @@
 // para la próxima corrida — mismo criterio "idempotente, se puede volver a
 // llamar las veces que haga falta" que /cuotas y /backfill-equipos. Para el
 // backfill inicial, disparar este endpoint varias veces seguidas a mano.
+//
+// BUG YA VISTO ANTES en /cuotas (ver src/rutas/cuotas.js): con topes
+// generosos, cron-job.org viene fallando por "tiempo de espera agotado"
+// justo en los ~30s de su timeout — ahí se solucionó bajando el tope, no
+// subiendo el timeout. Se arranca acá directamente con topes chicos por la
+// misma razón (y quedan configurables por variable de entorno, sin
+// redeploy, para subirlos con confianza una vez que el backfill inicial
+// ya esté al día y las corridas normales tengan menos trabajo pendiente).
 const { supabase } = require('../supabaseClient');
 const { obtenerPlantelClub, obtenerPerfilBasicoJugador, nombreCortoDesdeFirstLast } = require('../apiFootball');
 
-const MAX_EQUIPOS_POR_CORRIDA = 40;
-const MAX_JUGADORES_NUEVOS_POR_CORRIDA = 80;
-const PAUSA_ENTRE_EQUIPOS_MS = 300;
-const PAUSA_ENTRE_PERFILES_MS = 300;
+const MAX_EQUIPOS_POR_CORRIDA = Number(process.env.MAX_EQUIPOS_POR_CORRIDA_PLANTELES) || 8;
+const MAX_JUGADORES_NUEVOS_POR_CORRIDA = Number(process.env.MAX_JUGADORES_NUEVOS_POR_CORRIDA_PLANTELES) || 20;
+const PAUSA_ENTRE_EQUIPOS_MS = 200;
+const PAUSA_ENTRE_PERFILES_MS = 200;
 
 function pausa(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
