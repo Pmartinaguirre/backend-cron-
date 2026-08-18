@@ -65,6 +65,38 @@ function pausa(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// LIMITADOR DE RITMO GLOBAL (bug real, confirmado en logs de Render:
+// "rateLimit: Too many requests. You have reached your per-minute request
+// limit" — con concurrencia 4 y una pausa fija de 200ms POR CARRIL, esta
+// corrida sola manda varios cientos de pedidos por minuto a API-Football,
+// muy por encima de lo que el plan permite. Una vez que se pisa el límite,
+// TODOS los pedidos del resto de esa ventana de 1 minuto fallan igual —por
+// eso salieron 0 de 875 resueltos: el primero pisó el límite y arrastró a
+// todo el resto). Además, esto le come cupo A LOS OTROS crons (/cuotas,
+// /vivo, /resolver) que comparten la misma cuenta de API-Football.
+//
+// A diferencia de la pausa fija por carril (que solo espacia CADA CARRIL
+// por separado, así que 4 carriles en paralelo igual pueden mandar 4
+// pedidos casi juntos), esto es una cola COMPARTIDA entre todos los
+// carriles: cada pedido, sin importar de qué carril venga, espera su turno
+// en la MISMA fila antes de salir — así el total combinado nunca supera
+// MAX_REQUESTS_POR_MINUTO, venga de donde venga.
+//
+// El default (120/min = 1 cada 500ms) es deliberadamente conservador
+// porque no sabemos el límite real del plan — hay margen para subirlo por
+// variable de entorno una vez confirmado cuánto permite de verdad (lo dice
+// el mensaje de error de la API, o el soporte/dashboard de API-Football).
+const MAX_REQUESTS_POR_MINUTO = Number(process.env.MAX_REQUESTS_POR_MINUTO_PLANTELES) || 120;
+const INTERVALO_ENTRE_REQUESTS_MS = Math.max(50, Math.ceil(60000 / MAX_REQUESTS_POR_MINUTO));
+let colaLimitador = Promise.resolve();
+function limitarRitmo() {
+  const turno = colaLimitador.then(() => pausa(INTERVALO_ENTRE_REQUESTS_MS));
+  // No encadenar el rechazo (si lo hubiera) para que un turno no tumbe la
+  // cola entera — pausa() nunca rechaza, así que esto es solo defensivo.
+  colaLimitador = turno.catch(() => {});
+  return turno;
+}
+
 // Mapea `items` con como mucho `concurrencia` tareas en simultáneo (patrón
 // "pool de trabajadores": cada carril va tomando el siguiente item libre no
 // bien termina el anterior, en vez de esperar a que TODOS terminen antes de
@@ -80,6 +112,25 @@ async function pMap(items, concurrencia, fn) {
   }
   const carriles = Array.from({ length: Math.max(1, Math.min(concurrencia, items.length)) }, trabajador);
   await Promise.all(carriles);
+}
+
+// Si `fn` tira un error marcado `.esRateLimit` (ver obtenerPerfilBasicoJugador
+// / obtenerPlantelClub en apiFootball.js), espera un buen rato y reintenta
+// UNA vez — a diferencia de darlo por perdido, esto asume que el jugador/
+// equipo SÍ existe y el problema fue puramente de ritmo, así que vale la
+// pena esperar a que se libere la ventana de 1 minuto en vez de sumarlo a
+// "sin resolver" para siempre.
+async function conReintentoRateLimit(fn, esperaMs = 10000) {
+  try {
+    return await fn();
+  } catch (e) {
+    if (e.esRateLimit) {
+      console.warn(`[/refrescar-planteles] Rate limit — esperando ${esperaMs}ms antes de reintentar...`);
+      await pausa(esperaMs);
+      return fn();
+    }
+    throw e;
+  }
 }
 
 // Universo de equipos controlables: local + visita de todo desafío Cat.4/5
@@ -160,7 +211,14 @@ async function ejecutarRefresco() {
 
     await pMap(lote, CONCURRENCIA_EQUIPOS, async (equipo) => {
       try {
-        const plantel = await obtenerPlantelClub(equipo.id);
+        const plantel = await conReintentoRateLimit(async () => {
+          // obtenerPlantelClub hace 2 pedidos internos (squad + coach) en
+          // paralelo — se pide turno dos veces para que el limitador los
+          // cuente a ambos, no solo a uno.
+          await limitarRitmo();
+          await limitarRitmo();
+          return obtenerPlantelClub(equipo.id);
+        });
 
         // Marcador de "intentado ahora" (a pedido, ver nota de ORDEN más
         // arriba) — se escribe SIEMPRE, exista o no entrenador, e incluso
@@ -294,7 +352,10 @@ async function ejecutarRefresco() {
     const muestraSinResolver = [];
     await pMap(pendientes, CONCURRENCIA_PERFILES, async (id) => {
       try {
-        const perfil = await obtenerPerfilBasicoJugador(id);
+        const perfil = await conReintentoRateLimit(async () => {
+          await limitarRitmo();
+          return obtenerPerfilBasicoJugador(id);
+        });
         const nombreCorto = perfil ? nombreCortoDesdeFirstLast(perfil.firstname, perfil.lastname) : null;
         if (nombreCorto) {
           filasResueltas.push({ jugador_id: id, nombre_corto: nombreCorto, actualizado_en: new Date().toISOString() });

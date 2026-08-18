@@ -1168,19 +1168,30 @@ async function obtenerPerfilBasicoJugador(playerId) {
   const data = await resp.json();
   const p = data?.response?.[0]?.player;
   if (!p) {
-    // Diagnóstico (bug real: /refrescar-planteles se quedó resolviendo 0
-    // nombres corrida tras corrida, sin ningún error visible — antes acá
-    // se devolvía null en silencio, sin dejar rastro de POR QUÉ la API no
-    // trajo el jugador: ¿cuota agotada? ¿id que ya no existe en la API?
-    // ¿error del lado de API-Football?). Se loguea la respuesta cruda
-    // (errors + cuánto queda de cuota, si la API lo informa en headers)
-    // para poder diagnosticar en los logs de Render en vez de adivinar.
+    // Diagnóstico (bug real, confirmado en logs: "rateLimit: Too many
+    // requests. You have reached your per-minute request limit") — antes
+    // acá se devolvía null en silencio para CUALQUIER motivo, mezclando
+    // "este jugador puntual no tiene perfil en la API" (definitivo, no
+    // tiene sentido reintentar) con "nos pasamos del límite por minuto de
+    // API-Football" (transitorio — el jugador SÍ tiene perfil, solo hay que
+    // esperar y volver a pedirlo). Sin esta distinción, /refrescar-planteles
+    // marcaba como "sin resolver" a jugadores que en realidad solo cayeron
+    // en la ventana de 1 minuto equivocada. Ahora el caso de rate limit
+    // tira una excepción marcada (`.esRateLimit`) para que el que llama
+    // pueda esperar y reintentar en vez de darlo por perdido.
     const restante = resp.headers.get('x-ratelimit-requests-remaining');
+    const erroresApi = data?.errors;
+    const esRateLimit = !!(erroresApi && (erroresApi.rateLimit || erroresApi.requests));
     console.error(
       `[obtenerPerfilBasicoJugador] Sin perfil para el jugador ${playerId}. ` +
-      `errors=${JSON.stringify(data?.errors ?? null)} results=${data?.results ?? 'n/a'} ` +
+      `errors=${JSON.stringify(erroresApi ?? null)} results=${data?.results ?? 'n/a'} ` +
       `cuotaRestante=${restante ?? 'desconocida'}`
     );
+    if (esRateLimit) {
+      const err = new Error('API-Football: límite de pedidos por minuto alcanzado.');
+      err.esRateLimit = true;
+      throw err;
+    }
     return null;
   }
 
@@ -1379,6 +1390,19 @@ async function obtenerPlantelClub(teamId) {
     fetch(`${BASE}/coachs?team=${teamId}`, { headers }),
   ]);
   const [dataSquad, dataCoach] = await Promise.all([respSquad.json(), respCoach.json()]);
+
+  // Diagnóstico + distinción rate-limit vs. sin-datos (mismo bug real que
+  // obtenerPerfilBasicoJugador — ver esa función para el detalle completo):
+  // varios de los "Sin plantel en API-Football" que salían en
+  // /refrescar-planteles probablemente eran en realidad el límite de
+  // pedidos por minuto, no equipos sin plantel de verdad.
+  const erroresSquad = dataSquad?.errors;
+  if (erroresSquad && (erroresSquad.rateLimit || erroresSquad.requests)) {
+    console.error(`[obtenerPlantelClub] Rate limit pidiendo el plantel del equipo ${teamId}: ${JSON.stringify(erroresSquad)}`);
+    const err = new Error('API-Football: límite de pedidos por minuto alcanzado.');
+    err.esRateLimit = true;
+    throw err;
+  }
 
   const jugadoresCrudos = dataSquad?.response?.[0]?.players || [];
   if (jugadoresCrudos.length === 0) return null;
