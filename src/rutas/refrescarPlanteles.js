@@ -281,13 +281,26 @@ async function ejecutarRefresco() {
     if (errPend) throw errPend;
     const pendientes = (filasPendientes || []).map((p) => p.jugador_id);
 
+    // Diagnóstico (bug real: 3 corridas seguidas resolviendo 0 nombres de
+    // 874 pendientes, sin ningún error) — antes acá un perfil/nombreCorto
+    // que diera null en silencio (sin tirar excepción) no dejaba NINGÚN
+    // rastro en el resultado, así que no había forma de distinguir "cuota
+    // de API-Football agotada" de "estos jugadores puntuales no tienen
+    // perfil en la API" con solo mirar la respuesta del endpoint. Ahora se
+    // cuentan aparte y se guarda una muestra de ids para poder diagnosticar
+    // sin tener que ir a buscar en los logs línea por línea.
     const filasResueltas = [];
+    let sinPerfilONombre = 0;
+    const muestraSinResolver = [];
     await pMap(pendientes, CONCURRENCIA_PERFILES, async (id) => {
       try {
         const perfil = await obtenerPerfilBasicoJugador(id);
         const nombreCorto = perfil ? nombreCortoDesdeFirstLast(perfil.firstname, perfil.lastname) : null;
         if (nombreCorto) {
           filasResueltas.push({ jugador_id: id, nombre_corto: nombreCorto, actualizado_en: new Date().toISOString() });
+        } else {
+          sinPerfilONombre++;
+          if (muestraSinResolver.length < 10) muestraSinResolver.push(id);
         }
       } catch (e) {
         console.error(`[/refrescar-planteles] Error resolviendo nombre del jugador ${id}:`, e);
@@ -295,6 +308,8 @@ async function ejecutarRefresco() {
       }
       await pausa(PAUSA_ENTRE_PERFILES_MS);
     });
+    resultado.sinPerfilONombre = sinPerfilONombre;
+    resultado.muestraSinResolver = muestraSinResolver;
     if (filasResueltas.length > 0) {
       // Upsert PARCIAL a propósito (solo jugador_id + nombre_corto): no toca
       // nombre/foto, que ya se guardaron arriba en el upsert de identidad

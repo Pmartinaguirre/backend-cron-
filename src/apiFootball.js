@@ -1167,7 +1167,22 @@ async function obtenerPerfilBasicoJugador(playerId) {
   const resp = await fetch(`${BASE}/players/profiles?player=${playerId}`, { headers });
   const data = await resp.json();
   const p = data?.response?.[0]?.player;
-  if (!p) return null;
+  if (!p) {
+    // Diagnóstico (bug real: /refrescar-planteles se quedó resolviendo 0
+    // nombres corrida tras corrida, sin ningún error visible — antes acá
+    // se devolvía null en silencio, sin dejar rastro de POR QUÉ la API no
+    // trajo el jugador: ¿cuota agotada? ¿id que ya no existe en la API?
+    // ¿error del lado de API-Football?). Se loguea la respuesta cruda
+    // (errors + cuánto queda de cuota, si la API lo informa en headers)
+    // para poder diagnosticar en los logs de Render en vez de adivinar.
+    const restante = resp.headers.get('x-ratelimit-requests-remaining');
+    console.error(
+      `[obtenerPerfilBasicoJugador] Sin perfil para el jugador ${playerId}. ` +
+      `errors=${JSON.stringify(data?.errors ?? null)} results=${data?.results ?? 'n/a'} ` +
+      `cuotaRestante=${restante ?? 'desconocida'}`
+    );
+    return null;
+  }
 
   const perfil = {
     id: p.id,
