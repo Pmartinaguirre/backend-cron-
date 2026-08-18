@@ -234,6 +234,9 @@ async function ejecutarRefresco() {
         (perfilesExistentes || []).filter((p) => p.nombre_corto).map((p) => p.jugador_id)
       );
     }
+    // Informativo nomás (cuántos de LOS EQUIPOS DE ESTA CORRIDA ya tenían
+    // nombre resuelto de antes) — ya no se usa para decidir a quién
+    // resolver, ver nota de PENDIENTES GLOBAL más abajo.
     resultado.nombresYaResueltos = idsYaResueltos.size;
 
     // Igual guardamos nombre/foto de TODOS los vistos (aunque el nombre_corto
@@ -251,10 +254,32 @@ async function ejecutarRefresco() {
       if (errUpsertBase) throw errUpsertBase;
     }
 
-    // Pendientes de resolver nombre_corto, con tope por corrida (ya no por
-    // timeout — ver nota arriba del archivo — sino para no correr sin
-    // ningún límite si el backlog creciera mucho).
-    const pendientes = idsVistos.filter((id) => !idsYaResueltos.has(id)).slice(0, MAX_JUGADORES_NUEVOS_POR_CORRIDA);
+    // PENDIENTES GLOBAL (bug real, reportado: "va super lento sube de a 50
+    // nombres por corrida" — con la cobertura de equipos ya casi completa
+    // (158/159), cada corrida solo re-visita una porción ROTATIVA de 60
+    // equipos, y antes acá solo se resolvían nombres de los jugadores
+    // VISTOS en ESOS 60 equipos puntuales — la inmensa mayoría de los
+    // pendientes reales (3289) pertenecían a equipos que esa corrida ni
+    // siquiera tocaba, así que el tope de 1500 nunca se llegaba a usar de
+    // verdad). Ahora se consulta directo el total de jugadores_perfil con
+    // nombre_corto pendiente EN TODA LA BASE, sin importar en qué equipo
+    // estén ni si ese equipo se procesó en esta corrida — así el tope por
+    // corrida se aplica sobre el backlog real completo.
+    const { count: totalPendientesAntes, error: errCountPend } = await supabase
+      .from('jugadores_perfil')
+      .select('jugador_id', { count: 'exact', head: true })
+      .is('nombre_corto', null);
+    if (errCountPend) throw errCountPend;
+    resultado.nombresPendientesGlobalAntes = totalPendientesAntes ?? 0;
+
+    const { data: filasPendientes, error: errPend } = await supabase
+      .from('jugadores_perfil')
+      .select('jugador_id')
+      .is('nombre_corto', null)
+      .order('actualizado_en', { ascending: true })
+      .limit(MAX_JUGADORES_NUEVOS_POR_CORRIDA);
+    if (errPend) throw errPend;
+    const pendientes = (filasPendientes || []).map((p) => p.jugador_id);
 
     const filasResueltas = [];
     await pMap(pendientes, CONCURRENCIA_PERFILES, async (id) => {
@@ -278,7 +303,7 @@ async function ejecutarRefresco() {
       if (errUpsertNombre) throw errUpsertNombre;
     }
     resultado.nombresNuevosResueltos = filasResueltas.length;
-    resultado.jugadoresPendientesDeNombre = idsVistos.length - idsYaResueltos.size - filasResueltas.length;
+    resultado.jugadoresPendientesDeNombre = Math.max(0, resultado.nombresPendientesGlobalAntes - filasResueltas.length);
 
     console.log('[/refrescar-planteles] Corrida terminada:', JSON.stringify(resultado));
   } catch (e) {

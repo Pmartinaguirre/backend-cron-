@@ -24,6 +24,7 @@ Backend chico (Node/Express) con los 4 endpoints que `cron-job.org` llama por ho
     from jugadores_perfil;
     ```
   - Tiene un candado: si disparás el endpoint mientras una corrida anterior sigue corriendo, no arranca una segunda en paralelo (responde avisando que ya hay una en curso) — evita choques de "duplicate key" cuando dos corridas eligen el mismo equipo a la vez.
+  - La resolución de nombres es sobre el **backlog global** de `jugadores_perfil` con `nombre_corto` pendiente (no solo los jugadores de los equipos que le tocó procesar a esa corrida puntual) — así el tope por corrida se aplica sobre el pendiente real completo, no sobre un subconjunto chico que dependía de qué equipos rotaron esa vez.
   - Para el backfill inicial (cientos de equipos/jugadores nunca vistos) conviene dispararlo varias veces seguidas a mano, esperando a que la respuesta de la corrida anterior diga `iniciado: true` de nuevo (o revisando los logs) antes de volver a llamarlo, hasta que la consulta de arriba muestre `pendientes = 0` y `equipos_con_plantel = 159` (o el total real de equipos controlables).
 
 - **`/invitar-a-grupo`** (POST) — invita a un amigo a un grupo (sala privada). Body: `{ salaId, email, invitadorId }`. Verifica que `invitadorId` sea el admin de esa sala. Si el mail ya es de un jugador registrado, lo agrega directo como miembro; si no, manda la invitación nativa de Supabase (mismo Resend ya configurado en Auth) y guarda una fila pendiente que se vincula sola cuando esa persona termine de registrarse (ver Registro.jsx).
