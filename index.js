@@ -29,6 +29,7 @@ const { rutaDiagnosticoIds } = require('./src/rutas/diagnosticoIds');
 const { rutaGanadorSemanal } = require('./src/rutas/ganadorSemanal');
 const { rutaRankingGrupo } = require('./src/rutas/rankingGrupo');
 const { rutaRankingGrupoHistorial } = require('./src/rutas/rankingGrupoHistorial');
+const { rutaRefrescarPlanteles } = require('./src/rutas/refrescarPlanteles');
 const {
   rutaNotificarRegistro,
   rutaNotificarInvitadoGrupo,
@@ -73,6 +74,16 @@ app.post('/ganador-semanal', exigirSecreto, rutaGanadorSemanal);
 
 app.get('/crear-partidos', exigirSecreto, rutaCrearPartidos);
 app.post('/crear-partidos', exigirSecreto, rutaCrearPartidos);
+
+// /refrescar-planteles: base propia de jugadores/planteles/entrenadores (a
+// pedido, "tenemos un total de equipos y jugadores controlable, me gustaría
+// tener la bbdd de los jugadores con datos nuestros") — ver
+// src/rutas/refrescarPlanteles.js para el detalle completo. Escribe en la
+// base, así que lleva secreto igual que /cuotas. Pensado para correr 1 vez
+// al día; para el backfill inicial conviene dispararlo varias veces seguidas
+// a mano (tiene tope de equipos/jugadores nuevos por corrida).
+app.get('/refrescar-planteles', exigirSecreto, rutaRefrescarPlanteles);
+app.post('/refrescar-planteles', exigirSecreto, rutaRefrescarPlanteles);
 
 // /equipos NO lleva exigirSecreto: es de solo lectura y la llama directo el
 // navegador del Admin (ver nota en src/rutas/equipos.js). Como el frontend

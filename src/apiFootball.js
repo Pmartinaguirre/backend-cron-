@@ -1173,6 +1173,14 @@ async function obtenerPerfilBasicoJugador(playerId) {
     id: p.id,
     edad: p.age ?? null,
     nacionalidad: p.nationality || null,
+    // firstname/lastname (a pedido, base propia de jugadores): a diferencia
+    // de /players/squads (que solo trae un `name` plano, imposible de
+    // partir en nombre/apellido a ciegas — ver nombreCortoDesdeFirstLast
+    // más abajo), /players/profiles SÍ separa nombre de apellido. Ya
+    // veníamos pidiendo este mismo endpoint acá, así que sumar estos dos
+    // campos no cuesta ninguna llamada extra.
+    firstname: p.firstname || null,
+    lastname: p.lastname || null,
   };
 
   if (cachePerfilesJugador.size >= MAX_JUGADORES_EN_CACHE) {
@@ -1181,6 +1189,22 @@ async function obtenerPerfilBasicoJugador(playerId) {
   cachePerfilesJugador.set(clave, { datos: perfil, expira: Date.now() + CACHE_PERFIL_MS });
 
   return perfil;
+}
+
+// "Primer nombre + primer apellido" calculado desde el firstname/lastname
+// YA SEPARADOS por API-Football (/players/profiles) — a diferencia de
+// adivinar por posición de palabra sobre un nombre plano (bug reportado:
+// "Fernando Matías Zampedri" -> "Fernando Matías", "Diego Jose Valencia
+// Morello" -> "Diego Morello"), esto no puede fallar por ambigüedad porque
+// la API ya nos dice dónde termina el nombre y dónde empieza el apellido.
+// Solo nos quedamos con la PRIMERA palabra de cada lado, por si alguno
+// trae compuesto ("Diego Jose" / "Valencia Morello") — así el resultado
+// siempre son dos palabras, prolijo para la pestaña Plantel y la ficha.
+function nombreCortoDesdeFirstLast(firstname, lastname) {
+  const primerNombre = String(firstname || '').trim().split(/\s+/)[0] || '';
+  const primerApellido = String(lastname || '').trim().split(/\s+/)[0] || '';
+  const resultado = [primerNombre, primerApellido].filter(Boolean).join(' ');
+  return resultado || null;
 }
 
 // ============================================================
@@ -1382,7 +1406,7 @@ async function obtenerPlantelClub(teamId) {
   return plantel;
 }
 
-module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerDatosVenuePorNombre, obtenerVenueDeEquipo, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture, obtenerFichaJugador, obtenerFichaClub, obtenerPlantelClub, obtenerPerfilBasicoJugador, obtenerHeadToHead, obtenerLesionados,
+module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerDatosVenuePorNombre, obtenerVenueDeEquipo, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture, obtenerFichaJugador, obtenerFichaClub, obtenerPlantelClub, obtenerPerfilBasicoJugador, nombreCortoDesdeFirstLast, obtenerHeadToHead, obtenerLesionados,
   // Exportados para /diagnostico-partido (a pedido: "veamos el cálculo de
   // ese partido en particular para ver dónde está el error") — sin esto no
   // hay forma de ver desde afuera los números CRUDOS que arma la nota.
