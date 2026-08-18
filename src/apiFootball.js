@@ -1308,7 +1308,81 @@ async function obtenerFichaClub(teamId) {
   return ficha;
 }
 
-module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerDatosVenuePorNombre, obtenerVenueDeEquipo, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture, obtenerFichaJugador, obtenerFichaClub, obtenerPerfilBasicoJugador, obtenerHeadToHead, obtenerLesionados,
+// ---------- Plantel de un club (a pedido, ficha de equipo -> pestaña
+// "Plantel"): entrenador actual + jugadores agrupados por posición. Dos
+// llamadas en paralelo — /players/squads?team= (plantilla completa, con
+// foto/dorsal/posición) y /coachs?team= (historial de entrenadores de ese
+// club; nos quedamos con el que tiene la carrera ahí ABIERTA, sin `end`,
+// que es el vigente). Caché larga (12 h): un plantel casi no cambia de una
+// consulta a otra salvo ventana de pases, mucho menos frecuente que un
+// resultado de partido.
+const CACHE_PLANTEL_MS = 12 * 60 * 60 * 1000;
+const MAX_PLANTELES_EN_CACHE = 300;
+const cachePlanteles = new Map(); // teamId -> { datos, expira }
+
+// Traduce la posición cruda de API-Football (siempre en inglés) al grupo en
+// español que pide el diseño de la pestaña Plantel — en ESE orden:
+// "delanteros, mediocampistas, defensas y arqueros".
+const GRUPO_POR_POSICION = {
+  Attacker: 'delanteros',
+  Midfielder: 'mediocampistas',
+  Defender: 'defensas',
+  Goalkeeper: 'arqueros',
+};
+
+async function obtenerPlantelClub(teamId) {
+  const clave = String(teamId);
+  const enCache = cachePlanteles.get(clave);
+  if (enCache && enCache.expira > Date.now()) return enCache.datos;
+
+  const [respSquad, respCoach] = await Promise.all([
+    fetch(`${BASE}/players/squads?team=${teamId}`, { headers }),
+    fetch(`${BASE}/coachs?team=${teamId}`, { headers }),
+  ]);
+  const [dataSquad, dataCoach] = await Promise.all([respSquad.json(), respCoach.json()]);
+
+  const jugadoresCrudos = dataSquad?.response?.[0]?.players || [];
+  if (jugadoresCrudos.length === 0) return null;
+
+  const grupos = { delanteros: [], mediocampistas: [], defensas: [], arqueros: [] };
+  jugadoresCrudos.forEach((j) => {
+    const grupo = GRUPO_POR_POSICION[j.position] || null;
+    // Posición desconocida/no mapeada (rarísimo, pero puede pasar con
+    // datos incompletos de la API): mejor no imprimir ese jugador que
+    // reventar el módulo entero con un grupo inexistente.
+    if (!grupo) return;
+    grupos[grupo].push({
+      id: j.id,
+      nombre: j.name || null,
+      numero: j.number ?? null,
+      foto: j.photo || null,
+    });
+  });
+  // Orden por dorsal dentro de cada grupo (sin número quedan al final).
+  Object.values(grupos).forEach((lista) => lista.sort((a, b) => (a.numero ?? 999) - (b.numero ?? 999)));
+
+  const coachesCrudos = dataCoach?.response || [];
+  const idNum = Number(teamId);
+  const coachActual = coachesCrudos.find((c) =>
+    Array.isArray(c.career) && c.career.some((ce) => ce.team?.id === idNum && !ce.end)
+  ) || coachesCrudos[0] || null;
+
+  const entrenador = coachActual ? {
+    nombre: [coachActual.firstname, coachActual.lastname].filter(Boolean).join(' ') || coachActual.name || null,
+    foto: coachActual.photo || null,
+  } : null;
+
+  const plantel = { entrenador, ...grupos };
+
+  if (cachePlanteles.size >= MAX_PLANTELES_EN_CACHE) {
+    cachePlanteles.delete(cachePlanteles.keys().next().value);
+  }
+  cachePlanteles.set(clave, { datos: plantel, expira: Date.now() + CACHE_PLANTEL_MS });
+
+  return plantel;
+}
+
+module.exports = { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerDatosVenuePorNombre, obtenerVenueDeEquipo, obtenerFixturesDeLiga, obtenerEquiposDeLiga, obtenerPosicionesDeLiga, obtenerDetalleFixture, obtenerFichaJugador, obtenerFichaClub, obtenerPlantelClub, obtenerPerfilBasicoJugador, obtenerHeadToHead, obtenerLesionados,
   // Exportados para /diagnostico-partido (a pedido: "veamos el cálculo de
   // ese partido en particular para ver dónde está el error") — sin esto no
   // hay forma de ver desde afuera los números CRUDOS que arma la nota.

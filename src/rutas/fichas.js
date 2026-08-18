@@ -18,7 +18,7 @@
 //     cambian nunca; las transferencias, un par de veces al año.
 //   - Ficha de club: 30 min. Los últimos 5 partidos sí se mueven, pero solo
 //     cuando termina uno.
-const { obtenerFichaJugador, obtenerFichaClub } = require('../apiFootball');
+const { obtenerFichaJugador, obtenerFichaClub, obtenerPlantelClub } = require('../apiFootball');
 
 const CACHE_JUGADOR_MS = 24 * 60 * 60 * 1000;
 
@@ -79,4 +79,23 @@ async function rutaClub(req, res) {
   }
 }
 
-module.exports = { rutaJugador, rutaClub };
+// GET /plantel?id=456 — plantel completo del club (entrenador + jugadores
+// agrupados por posición), para la pestaña "Plantel" de la ficha de equipo
+// (a pedido). obtenerPlantelClub ya cachea 12 h por su cuenta.
+async function rutaPlantel(req, res) {
+  const id = req.query.id;
+  if (!id) return res.status(400).json({ error: 'Falta el parámetro "id".' });
+
+  try {
+    const plantel = await obtenerPlantelClub(id);
+    if (!plantel) {
+      return res.status(404).json({ error: `API-Football no tiene plantel cargado para el club ${id}.` });
+    }
+    res.json(plantel);
+  } catch (e) {
+    console.error(`[/plantel] Error con el club ${id}:`, e);
+    res.status(500).json({ error: e.message });
+  }
+}
+
+module.exports = { rutaJugador, rutaClub, rutaPlantel };

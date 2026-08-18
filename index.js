@@ -18,7 +18,7 @@ const { rutaPosicionesLiga } = require('./src/rutas/posicionesLiga');
 const { rutaHistorialEnfrentamientos } = require('./src/rutas/historialEnfrentamientos');
 const { rutaDetallePartido } = require('./src/rutas/detallePartido');
 const { rutaLesionados } = require('./src/rutas/lesionados');
-const { rutaJugador, rutaClub } = require('./src/rutas/fichas');
+const { rutaJugador, rutaClub, rutaPlantel } = require('./src/rutas/fichas');
 const { rutaBackfillEquipos, rutaForma, rutaPerfilesJugadores } = require('./src/rutas/equiposIds');
 const { rutaMomentum } = require('./src/rutas/momentum');
 const { rutaMedia } = require('./src/rutas/media');
@@ -126,6 +126,14 @@ app.get('/club', (req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   next();
 }, rutaClub);
+
+// /plantel: entrenador + jugadores agrupados por posición de un club, para
+// la pestaña "Plantel" de la ficha de equipo. Solo lectura, caché largo del
+// lado del backend (ver src/apiFootball.js, obtenerPlantelClub).
+app.get('/plantel', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  next();
+}, rutaPlantel);
 
 // /forma: últimos 5 resultados de varios equipos de una vez, para la tira
 // V/E/P que va bajo cada equipo en las tarjetas de partido. Solo lectura.

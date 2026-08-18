@@ -18,7 +18,7 @@
 const DIAS_VENTANA_CUOTAS = Number(process.env.DIAS_VENTANA_CUOTAS) || 10;
 
 const { supabase } = require('../supabaseClient');
-const { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerDatosVenuePorNombre, obtenerVenueDeEquipo } = require('../apiFootball');
+const { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerDatosVenuePorNombre } = require('../apiFootball');
 
 // HORARIOS "TBD" SIN CONFIRMAR (a pedido, bug reportado: Libertadores del
 // 11 y 18 de agosto ya tenían horario publicado en API-Football y la app
@@ -189,6 +189,31 @@ async function rutaCuotas(req, res) {
     partidos = partidos.concat(noUrgentesResto.slice(0, cupoRestoAjustado));
   }
 
+  // Estadio HABITUAL corregido a mano por Pablo (a pedido: "cómo cambio
+  // para siempre el estadio típico de un club, para no tener que editarlo
+  // partido por partido" — ver crear_tabla_equipos_estadio_corregido.sql y
+  // el checkbox "Guardar como estadio habitual" en ModuloAdminEstadio,
+  // sementomvp.jsx). Se trae UNA sola vez para todos los equipos de esta
+  // corrida, no partido por partido. Si el equipo LOCAL de un partido tiene
+  // fila acá, ese estadio manda SIEMPRE por sobre lo que diga la API —
+  // Pablo lo confirmó a mano, así que es el dato de más confianza que
+  // existe (más que el propio fixture puntual, que en copas internacionales
+  // puede venir con el estadio de siempre del club aunque ese partido en
+  // particular se juegue en otro lado).
+  const idsEquiposLocal = [...new Set(partidos.map((p) => p.equipo_local_id).filter(Boolean))];
+  const estadiosCorregidosPorEquipo = new Map();
+  if (idsEquiposLocal.length > 0) {
+    const { data: corregidos, error: errorCorregidos } = await supabase
+      .from('equipos_estadio_corregido')
+      .select('equipo_id, estadio, estadio_ciudad, estadio_pais, estadio_capacidad, estadio_cesped, estadio_imagen')
+      .in('equipo_id', idsEquiposLocal);
+    if (errorCorregidos) {
+      console.error('[/cuotas] Error leyendo equipos_estadio_corregido:', errorCorregidos);
+    } else {
+      (corregidos || []).forEach((c) => estadiosCorregidosPorEquipo.set(c.equipo_id, c));
+    }
+  }
+
   const resultado = {
     revisados: partidos.length,
     pendientesProximaCorrida: Math.max(0, todosLosPartidosSinOrden.length - partidos.length),
@@ -274,11 +299,25 @@ async function rutaCuotas(req, res) {
         //      Claro Arena, no en su Santa Laura/San Carlos de siempre — el
         //      fallback por equipo pisaba el dato correcto del fixture con
         //      el estadio incorrecto "de siempre").
-        //   3) Estadio PROPIO del equipo local (/teams?id=, ver
-        //      obtenerVenueDeEquipo) — dato fijo del club, no del partido
-        //      puntual. Último recurso: solo cuando el fixture no trae
-        //      NINGÚN nombre de estadio o la búsqueda por nombre no
-        //      encontró nada.
+        //   3) [SACADO a pedido, ver más abajo] Antes había un tercer
+        //      intento acá — Estadio PROPIO del equipo local (/teams?id=,
+        //      obtenerVenueDeEquipo) cuando el fixture no traía NINGÚN
+        //      nombre de estadio propio. Bug reportado: "hay por lo menos
+        //      un 30% de los estadios mal ingresados" — el estadio FIJO del
+        //      equipo es el dato habitual, pero en copas internacionales
+        //      (Sudamericana/Libertadores) los equipos chicos suelen jugar
+        //      esos partidos puntuales en un estadio DISTINTO al de
+        //      siempre (más grande, neutral) y esta app lo mostraba con el
+        //      estadio de siempre como si fuera un hecho confirmado — caso
+        //      real: Recoleta vs Boca mostraba "Roque Battilana" (estadio
+        //      habitual de Recoleta) cuando en realidad se jugó en
+        //      "Defensores del Chaco". Sin ninguna señal PROPIA del
+        //      fixture, adivinar así tiene demasiado riesgo de estar mal —
+        //      mejor dejar el estadio vacío (como ya se hacía con árbitro
+        //      cuando falta, ver ModuloAdminEstadio: "Ocultar sección
+        //      árbitro si no hay dato") y que Pablo lo complete a mano
+        //      desde el Admin, que ahora además permite subir la foto
+        //      directo (ver comprimirFotoEstadio/bucket "fotos-estadios").
         // RECHEQUEO POR NOMBRE DISTINTO (a pedido, bug reportado: "sigue sin
         // cambiar el estadio de U. Católica" — una vez que capacidad/imagen
         // quedaban guardadas (aunque fuera con el estadio EQUIVOCADO del
@@ -292,16 +331,33 @@ async function rutaCuotas(req, res) {
         const nombreFixtureFresco = info?.estadioNombre || null;
         const nombreDistinto = nombreFixtureFresco && partido.estadio
           && nombreFixtureFresco.trim().toLowerCase() !== partido.estadio.trim().toLowerCase();
-        if (partido.estadio_capacidad == null || partido.estadio_imagen == null || nombreDistinto) {
+        // PASO 0, máxima prioridad: estadio HABITUAL corregido a mano por
+        // Pablo para el equipo LOCAL (ver estadiosCorregidosPorEquipo más
+        // arriba). Si existe, gana por sobre CUALQUIER dato de la API —
+        // ni siquiera se llama a obtenerDatosVenue/obtenerDatosVenuePorNombre,
+        // no hace falta: el override es la fuente de verdad.
+        const estadioCorregidoEquipo = partido.equipo_local_id
+          ? estadiosCorregidosPorEquipo.get(partido.equipo_local_id)
+          : null;
+        if (estadioCorregidoEquipo) {
+          if (estadioCorregidoEquipo.estadio != null) payload.estadio = estadioCorregidoEquipo.estadio;
+          if (estadioCorregidoEquipo.estadio_ciudad != null) payload.estadio_ciudad = estadioCorregidoEquipo.estadio_ciudad;
+          if (estadioCorregidoEquipo.estadio_pais != null) payload.estadio_pais = estadioCorregidoEquipo.estadio_pais;
+          if (estadioCorregidoEquipo.estadio_capacidad != null) payload.estadio_capacidad = estadioCorregidoEquipo.estadio_capacidad;
+          if (estadioCorregidoEquipo.estadio_cesped != null) payload.estadio_cesped = estadioCorregidoEquipo.estadio_cesped;
+          if (estadioCorregidoEquipo.estadio_imagen != null) payload.estadio_imagen = estadioCorregidoEquipo.estadio_imagen;
+        } else if (partido.estadio_capacidad == null || partido.estadio_imagen == null || nombreDistinto) {
           let venue = null;
           if (venueId) {
             venue = await obtenerDatosVenue(venueId);
           } else if (info?.estadioNombre) {
             venue = await obtenerDatosVenuePorNombre(info.estadioNombre);
           }
-          if (!venue && !venueId && partido.equipo_local_id) {
-            venue = await obtenerVenueDeEquipo(partido.equipo_local_id);
-          }
+          // Sin venueId Y sin nombre de estadio propio del fixture: no hay
+          // ninguna señal de ESTE partido puntual, así que no se adivina más
+          // (antes acá caía a obtenerVenueDeEquipo — ver comentario arriba).
+          // Queda sin estadio hasta que la API lo publique o el admin lo
+          // complete a mano.
           if (venue) {
             if (!venueId && venue.venueId != null) payload.estadio_venue_id = venue.venueId;
             // Nombre/ciudad del estadio (a pedido, bug encontrado: "en
