@@ -45,7 +45,13 @@ const { supabase } = require('../supabaseClient');
 const { obtenerPlantelClub, obtenerPerfilBasicoJugador, nombreCortoDesdeFirstLast } = require('../apiFootball');
 
 const MAX_EQUIPOS_POR_CORRIDA = Number(process.env.MAX_EQUIPOS_POR_CORRIDA_PLANTELES) || 8;
-const MAX_JUGADORES_NUEVOS_POR_CORRIDA = Number(process.env.MAX_JUGADORES_NUEVOS_POR_CORRIDA_PLANTELES) || 20;
+// 30, no 20 (a pedido, primera corrida real: 8 equipos meten de golpe
+// ~200-270 jugadores nuevos en jugadoresVistos, así que con tope 20 la
+// deuda de nombres pendientes crecía ~180 por corrida — jamás se iba a
+// alcanzar a resolver. Resolver un nombre es una sola llamada liviana
+// (/players/profiles, ya cacheada 30 días), así que hay margen para subir
+// bastante este tope sin acercarse al timeout.
+const MAX_JUGADORES_NUEVOS_POR_CORRIDA = Number(process.env.MAX_JUGADORES_NUEVOS_POR_CORRIDA_PLANTELES) || 30;
 const PAUSA_ENTRE_EQUIPOS_MS = 200;
 const PAUSA_ENTRE_PERFILES_MS = 200;
 
@@ -62,17 +68,20 @@ function pausa(ms) {
 // controlables y un tope de 8 por corrida, sin ningún orden explícito
 // Supabase devuelve siempre la MISMA lista — así que cada corrida procesaba
 // una y otra vez los mismos 8 primeros y los otros 151 nunca se llegaban a
-// tocar). Ahora se ordena por "hace más tiempo que no se refresca primero":
-// se cruza contra plantel_jugadores.actualizado_en (se usa esa tabla y no
-// entrenadores_equipo a propósito: el entrenador puede no venir en la API
-// para algún club puntual, y esa fila nunca se crearía — dejando a ese
-// equipo con prioridad máxima PARA SIEMPRE; la plantilla en cambio prácticamente
-// siempre tiene jugadores) y los equipos que TODAVÍA no tienen ninguna fila
-// ahí (nunca refrescados) van primero de todos. Así cada corrida avanza a
-// equipos nuevos, y una vez que ya se completó una vuelta completa, sigue
-// rotando y refresca de nuevo al que quedó más viejo — que es exactamente
-// el comportamiento correcto para un cron de refresco diario, no solo para
-// el backfill inicial.
+// tocar). Ahora se ordena por "hace más tiempo que no se lo INTENTA
+// primero": se cruza contra entrenadores_equipo.actualizado_en, que ahora
+// se escribe SIEMPRE que se procesa un equipo (más abajo, en el loop
+// principal) — tenga o no entrenador la API, y aunque el plantel entero
+// haya fallado ("Sin plantel en API-Football"). Esto último importa: en la
+// 2da corrida real, 8 equipos sin datos de plantel en la API se repitieron
+// SIEMPRE porque antes solo se marcaba como "refrescado" cuando SÍ había
+// datos que guardar — un equipo sin plantel en la API nunca dejaba rastro,
+// así que quedaba con prioridad máxima para siempre y bloqueaba la
+// rotación del resto. Los equipos que TODAVÍA no se intentaron ni una vez
+// van primero de todos. Así cada corrida avanza siempre a equipos nuevos
+// (les vaya bien o mal), y una vez completada una vuelta entera, sigue
+// rotando y reintenta al que quedó más viejo — correcto tanto para el
+// backfill inicial como para el refresco diario en régimen.
 async function equiposControlables() {
   const { data, error } = await supabase
     .from('desafios_mvp')
@@ -90,25 +99,18 @@ async function equiposControlables() {
   const lista = [...equipos.entries()].map(([id, nombre]) => ({ id, nombre }));
   if (lista.length === 0) return lista;
 
-  const { data: filasPlantel, error: errRefrescos } = await supabase
-    .from('plantel_jugadores')
+  const { data: intentos, error: errIntentos } = await supabase
+    .from('entrenadores_equipo')
     .select('equipo_id, actualizado_en')
     .in('equipo_id', lista.map((e) => e.id));
-  if (errRefrescos) throw errRefrescos;
+  if (errIntentos) throw errIntentos;
 
-  // Un equipo tiene VARIAS filas en plantel_jugadores (una por jugador) —
-  // acá se calcula la más reciente por equipo (todas quedan con la misma
-  // marca de tiempo dentro de una misma corrida, así que cualquiera de sus
-  // filas alcanza, pero se toma el máximo para ser explícitos).
-  const ultimoRefrescoPorEquipo = new Map();
-  (filasPlantel || []).forEach((f) => {
-    const t = new Date(f.actualizado_en).getTime();
-    const actual = ultimoRefrescoPorEquipo.get(f.equipo_id);
-    if (actual == null || t > actual) ultimoRefrescoPorEquipo.set(f.equipo_id, t);
-  });
-  // Nunca refrescado (sin ninguna fila todavía) = prioridad máxima, antes
-  // que cualquier fecha real.
-  lista.sort((a, b) => (ultimoRefrescoPorEquipo.get(a.id) ?? -Infinity) - (ultimoRefrescoPorEquipo.get(b.id) ?? -Infinity));
+  const ultimoIntentoPorEquipo = new Map(
+    (intentos || []).map((r) => [r.equipo_id, new Date(r.actualizado_en).getTime()])
+  );
+  // Nunca intentado (sin fila todavía) = prioridad máxima, antes que
+  // cualquier fecha real.
+  lista.sort((a, b) => (ultimoIntentoPorEquipo.get(a.id) ?? -Infinity) - (ultimoIntentoPorEquipo.get(b.id) ?? -Infinity));
   return lista;
 }
 
@@ -133,7 +135,28 @@ async function rutaRefrescarPlanteles(req, res) {
     for (const equipo of lote) {
       try {
         const plantel = await obtenerPlantelClub(equipo.id);
-        if (!plantel) { resultado.errores.push({ equipoId: equipo.id, error: 'Sin plantel en API-Football' }); continue; }
+
+        // Marcador de "intentado ahora" (a pedido, ver nota de ORDEN más
+        // arriba) — se escribe SIEMPRE, exista o no entrenador, e incluso
+        // si el plantel entero vino vacío. Es lo único que evita que un
+        // equipo problemático bloquee la rotación reintentándose para
+        // siempre en cada corrida.
+        const { error: errMarca } = await supabase.from('entrenadores_equipo').upsert({
+          equipo_id: equipo.id,
+          equipo_nombre: equipo.nombre,
+          nombre: plantel?.entrenador?.nombre ?? null,
+          foto: plantel?.entrenador?.foto ?? null,
+          actualizado_en: new Date().toISOString(),
+        });
+        if (errMarca) throw errMarca;
+        if (plantel?.entrenador) resultado.entrenadoresGuardados++;
+
+        if (!plantel) {
+          resultado.errores.push({ equipoId: equipo.id, error: 'Sin plantel en API-Football' });
+          resultado.equiposRevisados++;
+          await pausa(PAUSA_ENTRE_EQUIPOS_MS);
+          continue;
+        }
 
         const filasPlantel = [];
         ['delanteros', 'mediocampistas', 'defensas', 'arqueros'].forEach((grupo) => {
@@ -162,18 +185,6 @@ async function rutaRefrescarPlanteles(req, res) {
           if (errIns) throw errIns;
         }
         resultado.jugadoresEnPlanteles += filasPlantel.length;
-
-        if (plantel.entrenador) {
-          const { error: errCoach } = await supabase.from('entrenadores_equipo').upsert({
-            equipo_id: equipo.id,
-            equipo_nombre: equipo.nombre,
-            nombre: plantel.entrenador.nombre,
-            foto: plantel.entrenador.foto,
-            actualizado_en: new Date().toISOString(),
-          });
-          if (errCoach) throw errCoach;
-          resultado.entrenadoresGuardados++;
-        }
 
         resultado.equiposRevisados++;
       } catch (e) {
