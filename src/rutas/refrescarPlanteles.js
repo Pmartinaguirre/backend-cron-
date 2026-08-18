@@ -57,6 +57,22 @@ function pausa(ms) {
 // activo con id de equipo ya resuelto (ver /backfill-equipos). Se juntan en
 // un Map por id para no repetir el mismo equipo si aparece como local en un
 // desafío y como visita en otro.
+//
+// ORDEN (bug encontrado en la primera corrida real: con 159 equipos
+// controlables y un tope de 8 por corrida, sin ningún orden explícito
+// Supabase devuelve siempre la MISMA lista — así que cada corrida procesaba
+// una y otra vez los mismos 8 primeros y los otros 151 nunca se llegaban a
+// tocar). Ahora se ordena por "hace más tiempo que no se refresca primero":
+// se cruza contra plantel_jugadores.actualizado_en (se usa esa tabla y no
+// entrenadores_equipo a propósito: el entrenador puede no venir en la API
+// para algún club puntual, y esa fila nunca se crearía — dejando a ese
+// equipo con prioridad máxima PARA SIEMPRE; la plantilla en cambio prácticamente
+// siempre tiene jugadores) y los equipos que TODAVÍA no tienen ninguna fila
+// ahí (nunca refrescados) van primero de todos. Así cada corrida avanza a
+// equipos nuevos, y una vez que ya se completó una vuelta completa, sigue
+// rotando y refresca de nuevo al que quedó más viejo — que es exactamente
+// el comportamiento correcto para un cron de refresco diario, no solo para
+// el backfill inicial.
 async function equiposControlables() {
   const { data, error } = await supabase
     .from('desafios_mvp')
@@ -71,7 +87,29 @@ async function equiposControlables() {
     if (d.equipo_local_id != null) equipos.set(d.equipo_local_id, d.equipo_local || null);
     if (d.equipo_visita_id != null) equipos.set(d.equipo_visita_id, d.equipo_visitante || null);
   });
-  return [...equipos.entries()].map(([id, nombre]) => ({ id, nombre }));
+  const lista = [...equipos.entries()].map(([id, nombre]) => ({ id, nombre }));
+  if (lista.length === 0) return lista;
+
+  const { data: filasPlantel, error: errRefrescos } = await supabase
+    .from('plantel_jugadores')
+    .select('equipo_id, actualizado_en')
+    .in('equipo_id', lista.map((e) => e.id));
+  if (errRefrescos) throw errRefrescos;
+
+  // Un equipo tiene VARIAS filas en plantel_jugadores (una por jugador) —
+  // acá se calcula la más reciente por equipo (todas quedan con la misma
+  // marca de tiempo dentro de una misma corrida, así que cualquiera de sus
+  // filas alcanza, pero se toma el máximo para ser explícitos).
+  const ultimoRefrescoPorEquipo = new Map();
+  (filasPlantel || []).forEach((f) => {
+    const t = new Date(f.actualizado_en).getTime();
+    const actual = ultimoRefrescoPorEquipo.get(f.equipo_id);
+    if (actual == null || t > actual) ultimoRefrescoPorEquipo.set(f.equipo_id, t);
+  });
+  // Nunca refrescado (sin ninguna fila todavía) = prioridad máxima, antes
+  // que cualquier fecha real.
+  lista.sort((a, b) => (ultimoRefrescoPorEquipo.get(a.id) ?? -Infinity) - (ultimoRefrescoPorEquipo.get(b.id) ?? -Infinity));
+  return lista;
 }
 
 async function rutaRefrescarPlanteles(req, res) {
