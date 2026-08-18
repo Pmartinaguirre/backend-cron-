@@ -28,6 +28,7 @@ const { rutaDiagnosticoPartido } = require('./src/rutas/diagnosticoPartido');
 const { rutaDiagnosticoIds } = require('./src/rutas/diagnosticoIds');
 const { rutaGanadorSemanal } = require('./src/rutas/ganadorSemanal');
 const { rutaRankingGrupo } = require('./src/rutas/rankingGrupo');
+const { rutaRankingGrupoHistorial } = require('./src/rutas/rankingGrupoHistorial');
 const {
   rutaNotificarRegistro,
   rutaNotificarInvitadoGrupo,
@@ -186,6 +187,15 @@ app.get('/ranking-grupo', (req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   next();
 }, rutaRankingGrupo);
+
+// /ranking-grupo-historial: historial de diamantes de UN jugador, acotado a
+// la misma ventana/filtro de competencia que /ranking-grupo — a pedido: "en
+// el modal de ficha de un jugador del grupo, mostrar su historial de
+// diamantes del grupo". Ver src/rutas/rankingGrupoHistorial.js.
+app.get('/ranking-grupo-historial', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  next();
+}, rutaRankingGrupoHistorial);
 
 // /backfill-equipos: completa equipo_local_id / equipo_visita_id en los
 // partidos que se crearon antes de que se guardaran esos ids. Escribe en la

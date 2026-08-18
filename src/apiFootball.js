@@ -604,6 +604,13 @@ async function obtenerEquiposDeLiga(leagueId, season) {
   const data = await resp.json();
   const equipos = (data?.response || [])
     .map((r) => ({
+      // `id` (a pedido, fix: "cuando seleccionas un equipo [en el buscador
+      // de Partidos] no te lleva a la página del equipo"): faltaba el id
+      // de API-Football acá, así que abrirFichaClub({ equipoId: item.id })
+      // recibía siempre undefined y no hacía nada (return early). Con el id
+      // puesto, EscudoEquipo también puede armar el logo del CDN si el
+      // local no matchea.
+      id: r.team?.id || null,
       nombre: r.team?.name || null,
       logo: r.team?.logo || null,
       pais: r.team?.country || null,
