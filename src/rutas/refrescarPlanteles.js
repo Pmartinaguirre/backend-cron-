@@ -12,7 +12,8 @@
 //          inserta) — así un jugador transferido no queda pegado a un
 //          equipo viejo. Esta tabla NO guarda nombre/foto (ver por qué en
 //          el punto 3).
-//        - entrenadores_equipo: upsert simple, 1 fila por equipo.
+//        - entrenadores_equipo: upsert simple, 1 fila por equipo (también
+//          sirve de "marcador de intento", ver ORDEN más abajo).
 //   3) Resuelve el "nombre_corto" (primer nombre + primer apellido, bien
 //      cortado) de los jugadores que todavía no lo tienen — ver el bug
 //      real que motivó esto: adivinar por posición de palabra sobre el
@@ -26,37 +27,59 @@
 //      NUNCA se borra en bloque) y no en plantel_jugadores (que sí se
 //      reemplaza entero cada corrida).
 //
-// TOPES (para que cada corrida responda antes de que cron-job.org/Render
-// corten la conexión por timeout, aunque la primera vez haya cientos de
-// equipos/jugadores nunca vistos): un tope de equipos por corrida y un tope
-// de jugadores NUEVOS a resolver por corrida. Lo que sobra queda pendiente
-// para la próxima corrida — mismo criterio "idempotente, se puede volver a
-// llamar las veces que haga falta" que /cuotas y /backfill-equipos. Para el
-// backfill inicial, disparar este endpoint varias veces seguidas a mano.
+// FIRE-AND-FORGET (a pedido, bug reportado: "no aguanto más de 70 [nombres
+// por corrida], con 100 se caía" — con 4200+ jugadores pendientes, a 70 por
+// corrida hacían falta ~60 corridas manuales solo para el backfill inicial).
+// El techo real NUNCA fue "cuánto podemos procesar" — era el timeout propio
+// de cron-job.org (~30s), que corta la conexión si la respuesta HTTP tarda
+// de más. La solución de fondo es dejar de atar el trabajo real a esa
+// respuesta: acá se responde 200 OK de inmediato (cron-job.org queda
+// contento) y TODO el trabajo (equipos + nombres) sigue corriendo en el
+// mismo proceso de Node después de responder — Express no mata la función
+// solo porque ya mandó la respuesta. El resultado final de cada corrida
+// queda en los logs de Render (Dashboard → Logs), no en la respuesta HTTP
+// (que ahora es solo un "recibido, arrancando"). Para ver el progreso real
+// acumulado, la fuente de verdad es Supabase directo — ver el SELECT de
+// ejemplo en el README.
 //
-// BUG YA VISTO ANTES en /cuotas (ver src/rutas/cuotas.js): con topes
-// generosos, cron-job.org viene fallando por "tiempo de espera agotado"
-// justo en los ~30s de su timeout — ahí se solucionó bajando el tope, no
-// subiendo el timeout. Se arranca acá directamente con topes chicos por la
-// misma razón (y quedan configurables por variable de entorno, sin
-// redeploy, para subirlos con confianza una vez que el backfill inicial
-// ya esté al día y las corridas normales tengan menos trabajo pendiente).
+// CONCURRENCIA (mismo pedido): además de sacarle el techo del timeout, se
+// paraleliza el trabajo (varios equipos/jugadores a la vez en vez de uno
+// por uno) para que además sea varias veces más rápido en tiempo real, no
+// solo "sin límite de tiempo". Se mantiene una pausa chica entre pedidos de
+// cada carril para no ráfaguear a API-Football de golpe.
 const { supabase } = require('../supabaseClient');
 const { obtenerPlantelClub, obtenerPerfilBasicoJugador, nombreCortoDesdeFirstLast } = require('../apiFootball');
 
-const MAX_EQUIPOS_POR_CORRIDA = Number(process.env.MAX_EQUIPOS_POR_CORRIDA_PLANTELES) || 8;
-// 30, no 20 (a pedido, primera corrida real: 8 equipos meten de golpe
-// ~200-270 jugadores nuevos en jugadoresVistos, así que con tope 20 la
-// deuda de nombres pendientes crecía ~180 por corrida — jamás se iba a
-// alcanzar a resolver. Resolver un nombre es una sola llamada liviana
-// (/players/profiles, ya cacheada 30 días), así que hay margen para subir
-// bastante este tope sin acercarse al timeout.
-const MAX_JUGADORES_NUEVOS_POR_CORRIDA = Number(process.env.MAX_JUGADORES_NUEVOS_POR_CORRIDA_PLANTELES) || 30;
+// Ya no hace falta que estos topes quepan en 30s (ver FIRE-AND-FORGET
+// arriba) — quedan como salvavidas de cordura (no procesar un volumen
+// disparatado en una sola corrida) y para cuidar la cuota de API-Football,
+// no por el timeout. Configurables por variable de entorno sin redeploy.
+const MAX_EQUIPOS_POR_CORRIDA = Number(process.env.MAX_EQUIPOS_POR_CORRIDA_PLANTELES) || 60;
+const MAX_JUGADORES_NUEVOS_POR_CORRIDA = Number(process.env.MAX_JUGADORES_NUEVOS_POR_CORRIDA_PLANTELES) || 1500;
+const CONCURRENCIA_EQUIPOS = Number(process.env.CONCURRENCIA_EQUIPOS_PLANTELES) || 4;
+const CONCURRENCIA_PERFILES = Number(process.env.CONCURRENCIA_PERFILES_PLANTELES) || 4;
 const PAUSA_ENTRE_EQUIPOS_MS = 200;
 const PAUSA_ENTRE_PERFILES_MS = 200;
 
 function pausa(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Mapea `items` con como mucho `concurrencia` tareas en simultáneo (patrón
+// "pool de trabajadores": cada carril va tomando el siguiente item libre no
+// bien termina el anterior, en vez de esperar a que TODOS terminen antes de
+// arrancar el próximo lote como haría trocear en bloques fijos). Sin
+// dependencias externas, a propósito — es lo único que hacía falta acá.
+async function pMap(items, concurrencia, fn) {
+  let siguiente = 0;
+  async function trabajador() {
+    while (siguiente < items.length) {
+      const i = siguiente++;
+      await fn(items[i], i);
+    }
+  }
+  const carriles = Array.from({ length: Math.max(1, Math.min(concurrencia, items.length)) }, trabajador);
+  await Promise.all(carriles);
 }
 
 // Universo de equipos controlables: local + visita de todo desafío Cat.4/5
@@ -114,7 +137,10 @@ async function equiposControlables() {
   return lista;
 }
 
-async function rutaRefrescarPlanteles(req, res) {
+// Acá vive TODO el trabajo real — se llama SIN esperar su resultado desde
+// rutaRefrescarPlanteles (ver nota FIRE-AND-FORGET arriba del archivo), así
+// que ninguna de sus promesas pendientes bloquea la respuesta HTTP.
+async function ejecutarRefresco() {
   const resultado = {
     equiposControlables: 0,
     equiposRevisados: 0,
@@ -132,7 +158,7 @@ async function rutaRefrescarPlanteles(req, res) {
 
     const jugadoresVistos = new Map(); // id -> {id, nombre, foto} (deduplicado entre equipos)
 
-    for (const equipo of lote) {
+    await pMap(lote, CONCURRENCIA_EQUIPOS, async (equipo) => {
       try {
         const plantel = await obtenerPlantelClub(equipo.id);
 
@@ -155,7 +181,7 @@ async function rutaRefrescarPlanteles(req, res) {
           resultado.errores.push({ equipoId: equipo.id, error: 'Sin plantel en API-Football' });
           resultado.equiposRevisados++;
           await pausa(PAUSA_ENTRE_EQUIPOS_MS);
-          continue;
+          return;
         }
 
         const filasPlantel = [];
@@ -192,7 +218,7 @@ async function rutaRefrescarPlanteles(req, res) {
         resultado.errores.push({ equipoId: equipo.id, error: e.message });
       }
       await pausa(PAUSA_ENTRE_EQUIPOS_MS);
-    }
+    });
 
     // De todos los jugadores vistos esta corrida, ¿cuáles YA tienen
     // nombre_corto resuelto en jugadores_perfil? El resto son "pendientes".
@@ -225,12 +251,13 @@ async function rutaRefrescarPlanteles(req, res) {
       if (errUpsertBase) throw errUpsertBase;
     }
 
-    // Pendientes de resolver nombre_corto, con tope por corrida (ver nota de
-    // timeout arriba del archivo).
+    // Pendientes de resolver nombre_corto, con tope por corrida (ya no por
+    // timeout — ver nota arriba del archivo — sino para no correr sin
+    // ningún límite si el backlog creciera mucho).
     const pendientes = idsVistos.filter((id) => !idsYaResueltos.has(id)).slice(0, MAX_JUGADORES_NUEVOS_POR_CORRIDA);
 
     const filasResueltas = [];
-    for (const id of pendientes) {
+    await pMap(pendientes, CONCURRENCIA_PERFILES, async (id) => {
       try {
         const perfil = await obtenerPerfilBasicoJugador(id);
         const nombreCorto = perfil ? nombreCortoDesdeFirstLast(perfil.firstname, perfil.lastname) : null;
@@ -242,7 +269,7 @@ async function rutaRefrescarPlanteles(req, res) {
         resultado.errores.push({ jugadorId: id, error: e.message });
       }
       await pausa(PAUSA_ENTRE_PERFILES_MS);
-    }
+    });
     if (filasResueltas.length > 0) {
       // Upsert PARCIAL a propósito (solo jugador_id + nombre_corto): no toca
       // nombre/foto, que ya se guardaron arriba en el upsert de identidad
@@ -253,11 +280,23 @@ async function rutaRefrescarPlanteles(req, res) {
     resultado.nombresNuevosResueltos = filasResueltas.length;
     resultado.jugadoresPendientesDeNombre = idsVistos.length - idsYaResueltos.size - filasResueltas.length;
 
-    res.json(resultado);
+    console.log('[/refrescar-planteles] Corrida terminada:', JSON.stringify(resultado));
   } catch (e) {
-    console.error('[/refrescar-planteles] Error general:', e);
-    res.status(500).json({ error: e.message, ...resultado });
+    console.error('[/refrescar-planteles] Error general:', e, JSON.stringify(resultado));
   }
+}
+
+async function rutaRefrescarPlanteles(req, res) {
+  // Fire-and-forget (ver nota arriba del archivo): se responde YA, antes de
+  // hacer ningún trabajo pesado, así cron-job.org nunca más ve un timeout
+  // acá — el trabajo real sigue corriendo en este mismo proceso después de
+  // esta línea. Resultado final: logs de Render, o consultar Supabase
+  // directo (ver README) para el progreso acumulado real.
+  res.json({
+    iniciado: true,
+    mensaje: 'Refresco de planteles arrancó en segundo plano. Resultado final en los logs de Render (no en esta respuesta) — o consultá jugadores_perfil/plantel_jugadores en Supabase para ver el progreso acumulado.',
+  });
+  ejecutarRefresco();
 }
 
 module.exports = { rutaRefrescarPlanteles };
