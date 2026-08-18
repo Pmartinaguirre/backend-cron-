@@ -286,7 +286,29 @@ async function ejecutarRefresco() {
   }
 }
 
+// CANDADO (bug real, visto en producción): el fire-and-forget responde tan
+// rápido que invita a disparar el endpoint de nuevo antes de que la corrida
+// anterior termine — y como cada disparo arranca su PROPIO
+// ejecutarRefresco() en el mismo proceso, dos corridas superpuestas podían
+// terminar eligiendo el MISMO equipo (equiposControlables() decide en base
+// a lo que YA esté guardado, y una corrida en curso todavía no terminó de
+// guardar nada) y las dos intentaban el mismo `delete + insert` en
+// plantel_jugadores a la vez — la segunda chocaba con un
+// "duplicate key value violates unique constraint" porque la primera ya
+// había insertado esas filas. Con este candado, si ya hay una corrida en
+// curso, el disparo nuevo no arranca una segunda en paralelo: solo avisa
+// que ya hay una corriendo.
+let corridaEnCurso = false;
+
 async function rutaRefrescarPlanteles(req, res) {
+  if (corridaEnCurso) {
+    return res.json({
+      iniciado: false,
+      mensaje: 'Ya hay una corrida en curso en este mismo proceso — esperá a que termine (mirá los logs de Render) antes de disparar otra.',
+    });
+  }
+  corridaEnCurso = true;
+
   // Fire-and-forget (ver nota arriba del archivo): se responde YA, antes de
   // hacer ningún trabajo pesado, así cron-job.org nunca más ve un timeout
   // acá — el trabajo real sigue corriendo en este mismo proceso después de
@@ -296,7 +318,12 @@ async function rutaRefrescarPlanteles(req, res) {
     iniciado: true,
     mensaje: 'Refresco de planteles arrancó en segundo plano. Resultado final en los logs de Render (no en esta respuesta) — o consultá jugadores_perfil/plantel_jugadores en Supabase para ver el progreso acumulado.',
   });
-  ejecutarRefresco();
+
+  try {
+    await ejecutarRefresco();
+  } finally {
+    corridaEnCurso = false;
+  }
 }
 
 module.exports = { rutaRefrescarPlanteles };
