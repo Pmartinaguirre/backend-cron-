@@ -61,6 +61,19 @@ const CONCURRENCIA_PERFILES = Number(process.env.CONCURRENCIA_PERFILES_PLANTELES
 const PAUSA_ENTRE_EQUIPOS_MS = 200;
 const PAUSA_ENTRE_PERFILES_MS = 200;
 
+// Log de arranque (bug real: "no puedo bajar de los 890 pendientes" — los
+// números de la corrida mostraban que solo se procesaban ~90 jugadores por
+// corrida en vez de hasta 1500, y la única explicación era una variable de
+// entorno vieja en Render pisando el default sin que se viera desde ningún
+// lado). Esto imprime el valor EFECTIVO de cada tope apenas arranca el
+// proceso, así una variable de entorno colgada de una prueba vieja se detecta
+// mirando los logs de Render, sin tener que adivinar comparando números.
+console.log(
+  `[/refrescar-planteles] Config efectiva al arrancar: MAX_EQUIPOS_POR_CORRIDA=${MAX_EQUIPOS_POR_CORRIDA} ` +
+  `MAX_JUGADORES_NUEVOS_POR_CORRIDA=${MAX_JUGADORES_NUEVOS_POR_CORRIDA} CONCURRENCIA_EQUIPOS=${CONCURRENCIA_EQUIPOS} ` +
+  `CONCURRENCIA_PERFILES=${CONCURRENCIA_PERFILES}`
+);
+
 function pausa(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -338,6 +351,10 @@ async function ejecutarRefresco() {
       .limit(MAX_JUGADORES_NUEVOS_POR_CORRIDA);
     if (errPend) throw errPend;
     const pendientes = (filasPendientes || []).map((p) => p.jugador_id);
+    console.log(
+      `[/refrescar-planteles] Seleccionados para resolver esta corrida: ${pendientes.length} ` +
+      `(tope configurado MAX_JUGADORES_NUEVOS_POR_CORRIDA=${MAX_JUGADORES_NUEVOS_POR_CORRIDA}, pendientes reales=${resultado.nombresPendientesGlobalAntes})`
+    );
 
     // Diagnóstico (bug real: 3 corridas seguidas resolviendo 0 nombres de
     // 874 pendientes, sin ningún error) — antes acá un perfil/nombreCorto
