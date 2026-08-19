@@ -1385,11 +1385,16 @@ async function obtenerPlantelClub(teamId) {
   const enCache = cachePlanteles.get(clave);
   if (enCache && enCache.expira > Date.now()) return enCache.datos;
 
-  const [respSquad, respCoach] = await Promise.all([
-    fetch(`${BASE}/players/squads?team=${teamId}`, { headers }),
-    fetch(`${BASE}/coachs?team=${teamId}`, { headers }),
-  ]);
-  const [dataSquad, dataCoach] = await Promise.all([respSquad.json(), respCoach.json()]);
+  // Secuencial a propósito (bug real: API-Football puede activar un BLOQUEO
+  // TEMPORAL de la IP/API key si detecta ráfagas de pedidos simultáneos,
+  // aunque el promedio por minuto esté bajo el límite del plan — ver
+  // "how-ratelimit-works" en su doc. Antes acá se pedían squad + entrenador
+  // EN PARALELO con Promise.all, lo que generaba justamente ese patrón de
+  // ráfaga en cada equipo procesado. Ahora van uno después del otro).
+  const respSquad = await fetch(`${BASE}/players/squads?team=${teamId}`, { headers });
+  const dataSquad = await respSquad.json();
+  const respCoach = await fetch(`${BASE}/coachs?team=${teamId}`, { headers });
+  const dataCoach = await respCoach.json();
 
   // Diagnóstico + distinción rate-limit vs. sin-datos (mismo bug real que
   // obtenerPerfilBasicoJugador — ver esa función para el detalle completo):

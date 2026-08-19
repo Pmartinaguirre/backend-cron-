@@ -256,9 +256,20 @@ async function ejecutarRefresco() {
         }
 
         const filasPlantel = [];
+        // Dedupe DENTRO de este equipo (bug real: "duplicate key value
+        // violates unique constraint plantel_jugadores_pkey" para
+        // equipo_id+jugador_id ya existentes — no era una carrera entre
+        // corridas, era la propia API-Football devolviendo al mismo jugador
+        // dos veces en el plantel del mismo equipo, p.ej. listado en dos
+        // grupos de posición. Sin este control, el insert en lote choca
+        // contra sí mismo aunque no haya ninguna otra corrida corriendo en
+        // paralelo).
+        const idsYaEnEsteEquipo = new Set();
         ['delanteros', 'mediocampistas', 'defensas', 'arqueros'].forEach((grupo) => {
           (plantel[grupo] || []).forEach((j) => {
             if (j.id == null) return;
+            if (idsYaEnEsteEquipo.has(j.id)) return;
+            idsYaEnEsteEquipo.add(j.id);
             filasPlantel.push({
               equipo_id: equipo.id,
               jugador_id: j.id,
