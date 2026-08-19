@@ -18,6 +18,19 @@
 const { supabase } = require('../supabaseClient');
 const { parsearMarcador } = require('../diamantes');
 
+// Orden de la tabla de posiciones del grupo (a pedido: "ante igualdad de
+// puntos pon primero a los que tengan más marcador exacto, luego dif, luego
+// PA y luego PJ") — desempate en cascada: 💎 diamantesGrupo, luego EX
+// (marcador exacto), luego DG (diferencia de gol), luego PA (acertó
+// ganador/empate), luego PJ (partidos jugados) como último criterio.
+function compararJugadoresGrupo(a, b) {
+  return (b.diamantesGrupo - a.diamantesGrupo)
+    || (b.ex - a.ex)
+    || (b.dg - a.dg)
+    || (b.pa - a.pa)
+    || (b.pj - a.pj);
+}
+
 async function rutaRankingGrupo(req, res) {
   const salaId = req.query?.sala_id;
   if (!salaId) {
@@ -265,12 +278,14 @@ async function rutaRankingGrupo(req, res) {
         ren: s.pj > 0 ? Math.round((s.pa / s.pj) * 100) : 0,
       };
     })
-    .sort((a, b) => b.diamantesGrupo - a.diamantesGrupo);
+    .sort(compararJugadoresGrupo);
 
-  // Posición de cada uno (empate = misma posición, mismo criterio que ya
-  // usa el resto de la app).
-  jugadores.forEach((j, i) => {
-    j.posicion = jugadores.filter((x) => x.diamantesGrupo > j.diamantesGrupo).length + 1;
+  // Posición de cada uno (empate = misma posición) — usa el MISMO criterio
+  // de desempate que el orden de arriba (compararJugadoresGrupo), así un
+  // jugador solo comparte posición con otro si de verdad están empatados en
+  // los 5 criterios, no solo en diamantes.
+  jugadores.forEach((j) => {
+    j.posicion = jugadores.filter((x) => compararJugadoresGrupo(x, j) < 0).length + 1;
   });
 
   res.json({
