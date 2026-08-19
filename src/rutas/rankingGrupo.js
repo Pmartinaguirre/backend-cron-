@@ -16,6 +16,7 @@
 // Sin exigirSecreto (mismo criterio que /equipos, /posiciones-liga): de
 // solo lectura, lo llama directo el navegador del jugador.
 const { supabase } = require('../supabaseClient');
+const { parsearMarcador } = require('../diamantes');
 
 async function rutaRankingGrupo(req, res) {
   const salaId = req.query?.sala_id;
@@ -165,14 +166,105 @@ async function rutaRankingGrupo(req, res) {
     sumaPorUsuario[h.usuario_id] = (sumaPorUsuario[h.usuario_id] || 0) + (h.monto || 0);
   });
 
+  // PJ/PA/DG/EX/REN — a pedido: "en los grupos, cuando muestra la tabla de
+  // posiciones del grupo agrega todas las columnas de la tabla ranking (PJ,
+  // PA, DG, EX, REN y diamantes)". MISMA lógica que statsPorUsuario en
+  // sementomvp.jsx (Ranking global, ver comentario grande ahí): PJ = partido
+  // ya resuelto con pronóstico hecho; PA = acertó ganador/empate; DG =
+  // además acertó la diferencia de gol (solo Cat.4, tiene marcador); EX =
+  // además acertó el marcador exacto (solo Cat.4). Se aplica la MISMA
+  // ventana por jugador (inicioPorUsuario/finVentana) y el MISMO filtro de
+  // competencia/equipos_seguidos (hayRestriccion) que ya se usa arriba para
+  // los diamantes, así todas las columnas de esta tabla salen de la misma
+  // regla del grupo. predicciones_mvp no tiene fecha_creacion propia (el
+  // insert de votos no la guarda) — la ventana se mira contra
+  // desafio.fecha_expiracion (fecha del partido), igual que hace el
+  // Ranking global.
+  const { data: votos, error: errVotos } = await supabase
+    .from('predicciones_mvp')
+    .select('usuario_id, desafio_id, eleccion, respuesta_extra')
+    .in('usuario_id', idsUnicos);
+  if (errVotos) {
+    return res.status(500).json({ error: errVotos.message });
+  }
+
+  const idsDesafiosVotos = [...new Set((votos || []).map((v) => v.desafio_id).filter(Boolean))];
+  const desafioStatsPorId = {};
+  if (idsDesafiosVotos.length > 0) {
+    const { data: desafiosVotos, error: errDesafiosVotos } = await supabase
+      .from('desafios_mvp')
+      .select('id, categoria, es_general, tema, equipo_local, equipo_visitante, fecha_expiracion, resultado_oficial, goles_local_oficial, goles_visitante_oficial')
+      .in('id', idsDesafiosVotos);
+    if (errDesafiosVotos) {
+      return res.status(500).json({ error: errDesafiosVotos.message });
+    }
+    (desafiosVotos || []).forEach((d) => { desafioStatsPorId[d.id] = d; });
+  }
+
+  const statsPorUsuario = {};
+  const obtenerStats = (uid) => {
+    if (!statsPorUsuario[uid]) statsPorUsuario[uid] = { pj: 0, pa: 0, dg: 0, ex: 0 };
+    return statsPorUsuario[uid];
+  };
+  (votos || []).forEach((v) => {
+    const desafio = desafioStatsPorId[v.desafio_id];
+    if (!desafio || desafio.es_general) return;
+    const cat = Number(desafio.categoria) || 1;
+    if (cat !== 4 && cat !== 5) return;
+
+    const desde = inicioPorUsuario[v.usuario_id];
+    if (!desde || !desafio.fecha_expiracion || desafio.fecha_expiracion < desde || desafio.fecha_expiracion > finVentana) return;
+
+    if (hayRestriccion) {
+      const temaCalza = desafio.tema && competenciasGrupo.includes(desafio.tema);
+      const equipoCalza = equiposSeguidosNorm.length > 0 && (
+        equiposSeguidosNorm.includes(normEquipo(desafio.equipo_local)) ||
+        equiposSeguidosNorm.includes(normEquipo(desafio.equipo_visitante))
+      );
+      if (!temaCalza && !equipoCalza) return;
+    }
+
+    const resueltoCat4 = cat === 4 && desafio.goles_local_oficial != null && desafio.goles_visitante_oficial != null;
+    const resueltoCat5 = cat === 5 && !!desafio.resultado_oficial;
+    if (!resueltoCat4 && !resueltoCat5) return;
+
+    const stats = obtenerStats(v.usuario_id);
+    stats.pj += 1;
+
+    if (resueltoCat5) {
+      if (v.eleccion === desafio.resultado_oficial) stats.pa += 1;
+      return;
+    }
+
+    const marcador = parsearMarcador(v.respuesta_extra);
+    if (!marcador) return;
+    const realLocal = Number(desafio.goles_local_oficial);
+    const realVisita = Number(desafio.goles_visitante_oficial);
+    const signoPred = Math.sign(marcador[0] - marcador[1]);
+    const signoReal = Math.sign(realLocal - realVisita);
+    if (signoPred !== signoReal) return;
+    stats.pa += 1;
+    if ((marcador[0] - marcador[1]) !== (realLocal - realVisita)) return;
+    stats.dg += 1;
+    if (marcador[0] === realLocal && marcador[1] === realVisita) stats.ex += 1;
+  });
+
   const jugadores = idsUnicos
-    .map((id) => ({
-      usuarioId: id,
-      nombre: nombrePorId[id] || 'Jugador',
-      avatarUrl: avatarUrlPorId[id] || null,
-      diamantesGrupo: sumaPorUsuario[id] || 0,
-      desde: inicioPorUsuario[id],
-    }))
+    .map((id) => {
+      const s = statsPorUsuario[id] || { pj: 0, pa: 0, dg: 0, ex: 0 };
+      return {
+        usuarioId: id,
+        nombre: nombrePorId[id] || 'Jugador',
+        avatarUrl: avatarUrlPorId[id] || null,
+        diamantesGrupo: sumaPorUsuario[id] || 0,
+        desde: inicioPorUsuario[id],
+        pj: s.pj,
+        pa: s.pa,
+        dg: s.dg,
+        ex: s.ex,
+        ren: s.pj > 0 ? Math.round((s.pa / s.pj) * 100) : 0,
+      };
+    })
     .sort((a, b) => b.diamantesGrupo - a.diamantesGrupo);
 
   // Posición de cada uno (empate = misma posición, mismo criterio que ya
