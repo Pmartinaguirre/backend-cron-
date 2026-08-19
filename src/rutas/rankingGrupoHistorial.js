@@ -93,7 +93,7 @@ async function rutaRankingGrupoHistorial(req, res) {
     if (p.desafio_id) {
       montoPorDesafio[p.desafio_id] = (montoPorDesafio[p.desafio_id] || 0) + (p.monto || 0);
     } else {
-      bonosSinDesafio.push({ id: `bono-${p.id}`, fecha: p.fecha_creacion, partido: p.motivo || 'Diamantes', tipoAcierto: [], diamantes: p.monto || 0, esApuesta: false });
+      bonosSinDesafio.push({ id: `bono-${p.id}`, fecha: p.fecha_creacion, partido: p.motivo || 'Diamantes', equipoLocal: null, equipoVisitante: null, tipoAcierto: [], diamantes: p.monto || 0, esApuesta: false });
     }
   });
 
@@ -138,6 +138,11 @@ async function rutaRankingGrupoHistorial(req, res) {
     const resueltoCat5 = cat === 5 && !!desafio.resultado_oficial;
     if (!resueltoCat4 && !resueltoCat5) return; // partido aún no resuelto, no cuenta como jugada en el historial
 
+    // equipoLocal/equipoVisitante SEPARADOS (a pedido: "columna 2 fila 1:
+    // Equipo A, columna 2 fila 2: Equipo B") — antes se mandaba un solo
+    // string "Local vs Visita" y el frontend lo truncaba con "..." al no
+    // caber en una línea. partido (combinado) se deja también, solo como
+    // fallback para los bonos sin desafío asociado (ver bonosSinDesafio).
     const partido = desafio.equipo_local && desafio.equipo_visitante
       ? `${desafio.equipo_local} vs ${desafio.equipo_visitante}`
       : (desafio.tema || 'Partido');
@@ -166,7 +171,10 @@ async function rutaRankingGrupoHistorial(req, res) {
     filas.push({
       id: v.id,
       fecha: desafio.fecha_expiracion,
+      tema: desafio.tema || null,
       partido,
+      equipoLocal: desafio.equipo_local || null,
+      equipoVisitante: desafio.equipo_visitante || null,
       tipoAcierto,
       diamantes: montoPorDesafio[v.desafio_id] || 0,
       esApuesta: true,
