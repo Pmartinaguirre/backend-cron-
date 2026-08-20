@@ -29,7 +29,7 @@ const {
 
 const DIAMANTES_BASE_SIN_CUOTA = 120; // mismo fallback que en sementomvp.jsx
 
-async function resolverCat5(partido, golesLocal, golesVisita, penalesLocal, penalesVisita) {
+async function resolverCat5(partido, golesLocal, golesVisita, penalesLocal, penalesVisita, estadoFinal) {
   const respuestaGanadora = construirTextoLEV(partido.equipo_local, partido.equipo_visitante, golesLocal, golesVisita);
 
   // Penales (bug encontrado, caso O'Higgins vs Boca): /vivo deja de tocar un
@@ -39,10 +39,22 @@ async function resolverCat5(partido, golesLocal, golesVisita, penalesLocal, pena
   // PARA SIEMPRE — nadie más los volvía a pedir. Ahora /resolver también los
   // guarda acá, en el mismo momento en que cierra el partido, así que aunque
   // /vivo lo haya perdido, esto lo rescata.
+  //
+  // estado_partido = estadoFinal (a pedido, bug reportado: "cuando el
+  // partido entra en penales... cuando termina el partido pasas a imprimir
+  // 0'+4' en vez de PEN"): /vivo deja de consultar este fixture ni bien
+  // queda resuelto (ver filtrarPendientes), así que estado_partido se
+  // quedaba PARA SIEMPRE con el último valor "en vivo" que alcanzó a
+  // guardar — muchas veces "BT" (descanso previo a la tanda) con el minuto
+  // ya reseteado, que el frontend no sabe interpretar y cae al genérico
+  // "N'+M'". Acá se pisa con el código FINAL de verdad (FT/AET/PEN) apenas
+  // se cierra el partido, para que el frontend siempre pueda distinguir un
+  // cierre por penales de uno normal.
   await supabase.from('desafios_mvp').update({
     resultado_oficial: respuestaGanadora,
     ...(penalesLocal != null ? { penales_local: penalesLocal } : {}),
     ...(penalesVisita != null ? { penales_visita: penalesVisita } : {}),
+    ...(estadoFinal ? { estado_partido: estadoFinal } : {}),
   }).eq('id', partido.id);
 
   const { data: ganadores, error } = await supabase
@@ -78,8 +90,9 @@ async function resolverCat5(partido, golesLocal, golesVisita, penalesLocal, pena
   return { tipo: 'cat5', respuestaGanadora, diamantesGanados, ganadores: usuariosUnicos.length };
 }
 
-async function resolverCat4(partido, golesLocal, golesVisita, penalesLocal, penalesVisita) {
-  // Ver nota de penales en resolverCat5 — mismo rescate acá para Cat.4.
+async function resolverCat4(partido, golesLocal, golesVisita, penalesLocal, penalesVisita, estadoFinal) {
+  // Ver nota de penales/estadoFinal en resolverCat5 — mismo rescate acá para
+  // Cat.4.
   await supabase
     .from('desafios_mvp')
     .update({
@@ -87,6 +100,7 @@ async function resolverCat4(partido, golesLocal, golesVisita, penalesLocal, pena
       goles_visitante_oficial: golesVisita,
       ...(penalesLocal != null ? { penales_local: penalesLocal } : {}),
       ...(penalesVisita != null ? { penales_visita: penalesVisita } : {}),
+      ...(estadoFinal ? { estado_partido: estadoFinal } : {}),
     })
     .eq('id', partido.id);
 
@@ -226,10 +240,16 @@ async function rutaResolver(req, res) {
       const penalesLocal = estado?.penalesLocal ?? partido.penales_local ?? null;
       const penalesVisita = estado?.penalesVisita ?? partido.penales_visita ?? null;
 
+      // Código FINAL de verdad (a pedido, ver nota grande en resolverCat5):
+      // el fresco de la API si confirmó cierre, si no el que ya teníamos en
+      // BD (yaTerminadoEnBD, caso API inconsistente) — nunca el intermedio
+      // que /vivo dejó pisado.
+      const estadoFinal = apiConfirmaFinal ? estado.estado : partido.estado_partido;
+
       const pago =
         Number(partido.categoria) === 5
-          ? await resolverCat5(partido, golesLocal, golesVisita, penalesLocal, penalesVisita)
-          : await resolverCat4(partido, golesLocal, golesVisita, penalesLocal, penalesVisita);
+          ? await resolverCat5(partido, golesLocal, golesVisita, penalesLocal, penalesVisita, estadoFinal)
+          : await resolverCat4(partido, golesLocal, golesVisita, penalesLocal, penalesVisita, estadoFinal);
 
       console.log(`[/resolver] Partido ${partido.id} resuelto:`, pago);
       resultado.resueltos++;
