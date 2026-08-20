@@ -53,7 +53,8 @@ const LIGAS = [
   { competencia: 'Serie A Italia', leagueId: 135, modo: MODO_COMPLETA },
   { competencia: 'LALIGA España', leagueId: 140, modo: MODO_COMPLETA },
   { competencia: 'Premier League Inglaterra', leagueId: 39, modo: MODO_COMPLETA },
-  { competencia: 'Ligue 1 Francia', leagueId: 61, modo: MODO_COMPLETA },
+  // Ligue 1 Francia: eliminada por completo (a pedido) — sacada de acá para
+  // que /crear-partidos deje de scrapear partidos nuevos de esta liga.
   { competencia: 'Champions League', leagueId: 2, modo: MODO_COMPLETA },
 ];
 
