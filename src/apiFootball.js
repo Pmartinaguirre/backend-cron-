@@ -278,18 +278,16 @@ async function obtenerEstadoFixture(fixtureId) {
   //     marcador de la tarjeta no calzaba con la lista de goleadores. Ahora
   //     se descarta explícitamente.
   //
-  //  2) En un "Own Goal" (autogol), CORRECCIÓN (a pedido, con dos capturas
-  //     reales que lo probaron: Huachipato-Limache y River-Vélez — en la
-  //     segunda, T. Silvero de Vélez se hizo un autogol y el marcador debía
-  //     quedar 2-0 para River, pero la app mostraba "1-1" del lado de
-  //     Vélez): una vuelta anterior de este código invertía el lado acá
-  //     asumiendo que `ev.team` en un autogol es el equipo DEL JUGADOR que
-  //     se lo hizo en contra. Es al revés: `ev.team` en API-Football YA
-  //     viene con el equipo que SUMA el gol (al que benefició), no el del
-  //     jugador. Invertirlo volvía a asignar el gol al equipo equivocado.
-  //     Ahora se trata exactamente igual que un gol normal — sin invertir
-  //     nada — y el campo "tipo: 'autogol'" solo queda para que la tarjeta
-  //     lo marque distinto (ícono, "(Autogol)"), no para decidir el lado.
+  //  2) En un "Own Goal" (autogol), ev.team es el equipo del JUGADOR que se
+  //     lo hizo en contra, pero el gol cuenta para el RIVAL — hay que
+  //     invertir el lado. CONFIRMADO con prueba real (a pedido, caso
+  //     River-Vélez, 23/08/2026): se probó sacando el invertido (asumiendo
+  //     que `ev.team` ya venía con el equipo beneficiado) y el resultado, tras
+  //     forzar el refresco del partido con /vivo?id=, siguió cayendo del lado
+  //     de Vélez — o sea que `ev.team` SÍ es el equipo del jugador (T.
+  //     Silvero, de Vélez), confirmando que hay que invertir. Si algún día
+  //     esto vuelve a fallar, no asumir de nuevo — probar con /vivo?id= en un
+  //     partido real con autogol antes de tocar esto.
   //
   // Se guarda además "tipo" ('normal' | 'penal' | 'autogol') para que la
   // tarjeta pueda marcarlos distinto, y el minuto suma el tiempo añadido
@@ -325,9 +323,9 @@ async function obtenerEstadoFixture(fixtureId) {
         minutoBase,
         tipo: esAutogol ? 'autogol' : esPenal ? 'penal' : 'normal',
       };
-      // Sin invertir (ver nota arriba): ev.team ya es el equipo que suma el
-      // gol, autogol o no.
-      const cuentaParaLocal = ev.team?.id === idEquipoLocal;
+      const esDelLocal = ev.team?.id === idEquipoLocal;
+      // El autogol se le cuenta al rival del jugador que lo marcó.
+      const cuentaParaLocal = esAutogol ? !esDelLocal : esDelLocal;
       if (cuentaParaLocal) goleadoresLocal.push(entrada);
       else goleadoresVisita.push(entrada);
     });
