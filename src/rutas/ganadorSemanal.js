@@ -76,6 +76,59 @@ const rangoDeSemana = (n) => {
 const fmtFecha = (t) => new Intl.DateTimeFormat('es-CL', { day: 'numeric', month: 'long', timeZone: 'America/Santiago' }).format(new Date(t));
 const fmtFechaHoraPartido = (iso) => new Intl.DateTimeFormat('es-CL', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'America/Santiago' }).format(new Date(iso));
 
+// Arma el filtro "¿este partido pertenece a lo que sigue el grupo?" (mismo
+// criterio que /ranking-grupo — competencias/equipos_seguidos, con el fix
+// de "solo partidos destacados" vía modo_competencias/equipos_tier_a_mvp).
+// Extraído a función propia (antes vivía inline más abajo) para poder
+// armarlo ANTES de saber si la semana ya está calculada — así, si alguien
+// pide reenviar el mail (?reenviar=1) para una semana que el cron ya
+// procesó, igual se puede filtrar qué partidos de la semana entrante le
+// corresponden a este grupo sin repetir el cálculo del ganador.
+async function construirCalzaConGrupo(grupo) {
+  const competenciasGrupo = grupo.competencias || [];
+  const equiposSeguidosGrupo = grupo.equipos_seguidos || [];
+  const hayRestriccion = competenciasGrupo.length > 0 || equiposSeguidosGrupo.length > 0;
+  const normEquipo = (s) => String(s || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().trim();
+  const equiposSeguidosNorm = equiposSeguidosGrupo.map(normEquipo);
+  const modoCompetencias = grupo.modo_competencias || {};
+  const competenciasTierA = competenciasGrupo.filter((c) => modoCompetencias[c] === 'tier_a');
+  const equiposTierAPorCompetencia = {};
+  if (competenciasTierA.length > 0) {
+    const { data: tierAData, error: errTierA } = await supabase
+      .from('equipos_tier_a_mvp')
+      .select('competencia, equipo')
+      .in('competencia', competenciasTierA);
+    if (errTierA) throw errTierA;
+    (tierAData || []).forEach((fila) => {
+      if (!equiposTierAPorCompetencia[fila.competencia]) equiposTierAPorCompetencia[fila.competencia] = [];
+      equiposTierAPorCompetencia[fila.competencia].push(fila.equipo);
+    });
+  }
+  const esPartidoDestacado = (d) => {
+    if (d?.es_destacado) return true;
+    const listaTierA = (d?.tema && equiposTierAPorCompetencia[d.tema]) || [];
+    if (listaTierA.length === 0) return false;
+    const equipos = [d?.equipo_local, d?.equipo_visitante].filter(Boolean).map((e) => e.toLowerCase());
+    const fase = String(d?.subtema || '').trim().toLowerCase();
+    const coincideEquipo = equipos.some((eq) => listaTierA.some((t) => eq.includes(t.toLowerCase())));
+    const coincideFase = fase && listaTierA.some((t) => fase.includes(t.toLowerCase()));
+    return coincideEquipo || coincideFase;
+  };
+  const partidoCalzaConGrupo = (d) => {
+    if (!hayRestriccion) return true;
+    const temaCalza = d.tema && competenciasGrupo.includes(d.tema)
+      && (modoCompetencias[d.tema] !== 'tier_a' || esPartidoDestacado(d));
+    const equipoCalza = equiposSeguidosNorm.length > 0 && (
+      equiposSeguidosNorm.includes(normEquipo(d.equipo_local)) ||
+      equiposSeguidosNorm.includes(normEquipo(d.equipo_visitante))
+    );
+    return temaCalza || equipoCalza;
+  };
+  return { partidoCalzaConGrupo };
+}
+
 // Mail de recap semanal (a pedido): tabla de posiciones de la semana que
 // terminó, ganador+medalla, anuncio de la semana que arranca hoy y sus
 // partidos para pronosticar, botón "Ir a pronosticar partidos" y un deseo
@@ -178,6 +231,15 @@ async function enviarRecapSemanal({
 }
 
 async function rutaGanadorSemanal(req, res) {
+  // ?reenviar=1 (a pedido: "cómo hacemos para forzar el envío de este mail
+  // ahora" — el push del mail de recap llegó DESPUÉS de que esa semana ya
+  // se había calculado a mano, así que el cron normal no manda nada, solo
+  // ve yaCalculado y sigue de largo). Con esto, para una semana YA
+  // calculada, en vez de saltarla vuelve a mandar el mail de recap usando
+  // el ganador que ya está guardado — no vuelve a tocar
+  // grupo_ganadores_semanales ni recalcula diamantes, solo reenvía el mail.
+  const forzarReenvio = req.query?.reenviar === '1' || req.query?.reenviar === 'true';
+
   // Semana a calcular: por default, la que acaba de cerrar (la anterior a
   // la actual). ?semana=N para recalcular una puntual a mano.
   const semanaActual = numeroSemanaDe(Date.now());
@@ -217,16 +279,36 @@ async function rutaGanadorSemanal(req, res) {
 
   for (const grupo of grupos || []) {
     try {
-      // Ya calculado antes para este grupo+semana — no lo repite (tampoco
-      // reenvía el mail: si ya se calculó, ya se mandó la vez anterior).
+      const { partidoCalzaConGrupo } = await construirCalzaConGrupo(grupo);
+      const partidosGrupoSemanaEntrante = partidosSemanaEntranteReales.filter((d) => partidoCalzaConGrupo(d));
+
+      // Ya calculado antes para este grupo+semana — no lo repite. Si viene
+      // ?reenviar=1, en vez de saltarlo reenvía el mail de recap con el
+      // ganador que ya está guardado (sin tocar el cálculo ni el insert).
       const { data: yaExiste } = await supabase
         .from('grupo_ganadores_semanales')
-        .select('id')
+        .select('id, usuario_id, diamantes_semana')
         .eq('sala_id', grupo.id)
         .eq('numero_semana', semanaObjetivo)
         .maybeSingle();
       if (yaExiste) {
-        resultado.grupos.push({ sala_id: grupo.id, nombre: grupo.nombre, yaCalculado: true });
+        if (forzarReenvio) {
+          let tablaSemana = null;
+          try {
+            tablaSemana = await calcularTablaGrupo(grupo.id, { periodo: 'semana', semana: semanaObjetivo });
+          } catch (eTabla) {
+            console.error('[ganadorSemanal] No se pudo calcular la tabla de la semana para el reenvío:', eTabla.message);
+          }
+          await enviarRecapSemanal({
+            grupo, semanaObjetivo, rangoObjetivo: { inicio, fin },
+            semanaSiguiente: semanaActual, rangoSiguiente: rangoNuevaSemana,
+            tablaSemana, ganadorId: yaExiste.usuario_id, diamantesGanador: yaExiste.diamantes_semana,
+            partidosSemanaEntrante: partidosGrupoSemanaEntrante,
+          });
+          resultado.grupos.push({ sala_id: grupo.id, nombre: grupo.nombre, yaCalculado: true, mailReenviado: true });
+        } else {
+          resultado.grupos.push({ sala_id: grupo.id, nombre: grupo.nombre, yaCalculado: true });
+        }
         continue;
       }
 
@@ -270,56 +352,9 @@ async function rutaGanadorSemanal(req, res) {
         if (errDesafiosRef) throw errDesafiosRef;
         (desafiosRef || []).forEach((d) => { desafioPorId[d.id] = d; });
       }
-      const competenciasGrupo = grupo.competencias || [];
-      const equiposSeguidosGrupo = grupo.equipos_seguidos || [];
-      const hayRestriccion = competenciasGrupo.length > 0 || equiposSeguidosGrupo.length > 0;
-      const normEquipo = (s) => String(s || '')
-        .normalize('NFD').replace(/[̀-ͯ]/g, '')
-        .toLowerCase().trim();
-      const equiposSeguidosNorm = equiposSeguidosGrupo.map(normEquipo);
-
-      // "Solo partidos destacados" (mismo fix que /ranking-grupo — bug
-      // reportado: un partido de una competencia en modo tier_a que NO
-      // involucra ningún equipo grande contaba igual para el premio
-      // semanal, con tal de que el tema calzara). modo_competencias viene
-      // del grupo (tema -> 'todos' | 'tier_a').
-      const modoCompetencias = grupo.modo_competencias || {};
-      const competenciasTierA = competenciasGrupo.filter((c) => modoCompetencias[c] === 'tier_a');
-      const equiposTierAPorCompetencia = {};
-      if (competenciasTierA.length > 0) {
-        const { data: tierAData, error: errTierA } = await supabase
-          .from('equipos_tier_a_mvp')
-          .select('competencia, equipo')
-          .in('competencia', competenciasTierA);
-        if (errTierA) throw errTierA;
-        (tierAData || []).forEach((fila) => {
-          if (!equiposTierAPorCompetencia[fila.competencia]) equiposTierAPorCompetencia[fila.competencia] = [];
-          equiposTierAPorCompetencia[fila.competencia].push(fila.equipo);
-        });
-      }
-      const esPartidoDestacado = (d) => {
-        if (d?.es_destacado) return true;
-        const listaTierA = (d?.tema && equiposTierAPorCompetencia[d.tema]) || [];
-        if (listaTierA.length === 0) return false;
-        const equipos = [d?.equipo_local, d?.equipo_visitante].filter(Boolean).map((e) => e.toLowerCase());
-        const fase = String(d?.subtema || '').trim().toLowerCase();
-        const coincideEquipo = equipos.some((eq) => listaTierA.some((t) => eq.includes(t.toLowerCase())));
-        const coincideFase = fase && listaTierA.some((t) => fase.includes(t.toLowerCase()));
-        return coincideEquipo || coincideFase;
-      };
-      // Extraído a función propia (antes vivía inline dentro del forEach de
-      // historial) para poder reutilizarlo también al filtrar los partidos
-      // de la semana entrante que van en el mail de recap.
-      const partidoCalzaConGrupo = (d) => {
-        if (!hayRestriccion) return true;
-        const temaCalza = d.tema && competenciasGrupo.includes(d.tema)
-          && (modoCompetencias[d.tema] !== 'tier_a' || esPartidoDestacado(d));
-        const equipoCalza = equiposSeguidosNorm.length > 0 && (
-          equiposSeguidosNorm.includes(normEquipo(d.equipo_local)) ||
-          equiposSeguidosNorm.includes(normEquipo(d.equipo_visitante))
-        );
-        return temaCalza || equipoCalza;
-      };
+      // (competenciasGrupo/tier_a/partidoCalzaConGrupo ya se calcularon más
+      // arriba, vía construirCalzaConGrupo, antes de saber si esta semana ya
+      // estaba calculada — se reutiliza el mismo `partidoCalzaConGrupo` acá.)
 
       const sumaPorUsuario = {};
       (historial || []).forEach((h) => {
@@ -340,7 +375,7 @@ async function rutaGanadorSemanal(req, res) {
       } catch (eTabla) {
         console.error('[ganadorSemanal] No se pudo calcular la tabla de la semana para el mail:', eTabla.message);
       }
-      const partidosGrupoSemanaEntrante = partidosSemanaEntranteReales.filter((d) => partidoCalzaConGrupo(d));
+      // (partidosGrupoSemanaEntrante ya se calculó más arriba.)
 
       const entradas = Object.entries(sumaPorUsuario);
       if (entradas.length === 0) {
