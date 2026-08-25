@@ -76,7 +76,7 @@ async function rutaGanadorSemanal(req, res) {
 
   const { data: grupos, error: errGrupos } = await supabase
     .from('salas_privadas_mvp')
-    .select('id, nombre, competencias, equipos_seguidos');
+    .select('id, nombre, competencias, equipos_seguidos, modo_competencias');
   if (errGrupos) {
     return res.status(500).json({ error: errGrupos.message });
   }
@@ -132,7 +132,7 @@ async function rutaGanadorSemanal(req, res) {
       if (idsDesafiosReferenciados.length > 0) {
         const { data: desafiosRef, error: errDesafiosRef } = await supabase
           .from('desafios_mvp')
-          .select('id, tema, equipo_local, equipo_visitante')
+          .select('id, tema, subtema, equipo_local, equipo_visitante, es_destacado')
           .in('id', idsDesafiosReferenciados);
         if (errDesafiosRef) throw errDesafiosRef;
         (desafiosRef || []).forEach((d) => { desafioPorId[d.id] = d; });
@@ -145,12 +145,43 @@ async function rutaGanadorSemanal(req, res) {
         .toLowerCase().trim();
       const equiposSeguidosNorm = equiposSeguidosGrupo.map(normEquipo);
 
+      // "Solo partidos destacados" (mismo fix que /ranking-grupo — bug
+      // reportado: un partido de una competencia en modo tier_a que NO
+      // involucra ningún equipo grande contaba igual para el premio
+      // semanal, con tal de que el tema calzara). modo_competencias viene
+      // del grupo (tema -> 'todos' | 'tier_a').
+      const modoCompetencias = grupo.modo_competencias || {};
+      const competenciasTierA = competenciasGrupo.filter((c) => modoCompetencias[c] === 'tier_a');
+      const equiposTierAPorCompetencia = {};
+      if (competenciasTierA.length > 0) {
+        const { data: tierAData, error: errTierA } = await supabase
+          .from('equipos_tier_a_mvp')
+          .select('competencia, equipo')
+          .in('competencia', competenciasTierA);
+        if (errTierA) throw errTierA;
+        (tierAData || []).forEach((fila) => {
+          if (!equiposTierAPorCompetencia[fila.competencia]) equiposTierAPorCompetencia[fila.competencia] = [];
+          equiposTierAPorCompetencia[fila.competencia].push(fila.equipo);
+        });
+      }
+      const esPartidoDestacado = (d) => {
+        if (d?.es_destacado) return true;
+        const listaTierA = (d?.tema && equiposTierAPorCompetencia[d.tema]) || [];
+        if (listaTierA.length === 0) return false;
+        const equipos = [d?.equipo_local, d?.equipo_visitante].filter(Boolean).map((e) => e.toLowerCase());
+        const fase = String(d?.subtema || '').trim().toLowerCase();
+        const coincideEquipo = equipos.some((eq) => listaTierA.some((t) => eq.includes(t.toLowerCase())));
+        const coincideFase = fase && listaTierA.some((t) => fase.includes(t.toLowerCase()));
+        return coincideEquipo || coincideFase;
+      };
+
       const sumaPorUsuario = {};
       (historial || []).forEach((h) => {
         if (h.desafio_id && hayRestriccion) {
           const d = desafioPorId[h.desafio_id];
           if (d) {
-            const temaCalza = d.tema && competenciasGrupo.includes(d.tema);
+            const temaCalza = d.tema && competenciasGrupo.includes(d.tema)
+              && (modoCompetencias[d.tema] !== 'tier_a' || esPartidoDestacado(d));
             const equipoCalza = equiposSeguidosNorm.length > 0 && (
               equiposSeguidosNorm.includes(normEquipo(d.equipo_local)) ||
               equiposSeguidosNorm.includes(normEquipo(d.equipo_visitante))

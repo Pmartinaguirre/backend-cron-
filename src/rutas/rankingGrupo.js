@@ -142,7 +142,7 @@ async function rutaRankingGrupo(req, res) {
   if (idsDesafiosReferenciados.length > 0) {
     const { data: desafiosRef, error: errDesafiosRef } = await supabase
       .from('desafios_mvp')
-      .select('id, tema, equipo_local, equipo_visitante')
+      .select('id, tema, subtema, equipo_local, equipo_visitante, es_destacado')
       .in('id', idsDesafiosReferenciados);
     if (errDesafiosRef) {
       return res.status(500).json({ error: errDesafiosRef.message });
@@ -157,6 +157,50 @@ async function rutaRankingGrupo(req, res) {
     .toLowerCase().trim();
   const equiposSeguidosNorm = equiposSeguidosGrupo.map(normEquipo);
 
+  // "Solo partidos destacados" (a pedido, bug reportado: "el partido Everton
+  // vs U. de Concepción no debería contar, ese grupo solo sigue los
+  // partidos destacados de Primera División Chile" — `modo_competencias`
+  // (tema -> 'todos' | 'tier_a') NO se estaba mirando acá, así que un grupo
+  // en modo tier_a igual contaba CUALQUIER partido de esa competencia con
+  // tal que el tema calzara. Mismo criterio que esPartidoDestacado en
+  // sementomvp.jsx (el frontend, que sí lo respeta al elegir qué partidos
+  // mostrar para pronosticar): un partido cuenta si está marcado a mano
+  // como destacado (es_destacado) o si juega alguno de los equipos/fases
+  // Tier A de esa competencia (equipos_tier_a_mvp).
+  const modoCompetencias = sala.modo_competencias || {};
+  const competenciasTierA = competenciasGrupo.filter((c) => modoCompetencias[c] === 'tier_a');
+  const equiposTierAPorCompetencia = {};
+  if (competenciasTierA.length > 0) {
+    const { data: tierAData, error: errTierA } = await supabase
+      .from('equipos_tier_a_mvp')
+      .select('competencia, equipo')
+      .in('competencia', competenciasTierA);
+    if (errTierA) {
+      return res.status(500).json({ error: errTierA.message });
+    }
+    (tierAData || []).forEach((fila) => {
+      if (!equiposTierAPorCompetencia[fila.competencia]) equiposTierAPorCompetencia[fila.competencia] = [];
+      equiposTierAPorCompetencia[fila.competencia].push(fila.equipo);
+    });
+  }
+  const esPartidoDestacado = (d) => {
+    if (d?.es_destacado) return true;
+    const listaTierA = (d?.tema && equiposTierAPorCompetencia[d.tema]) || [];
+    if (listaTierA.length === 0) return false;
+    const equipos = [d?.equipo_local, d?.equipo_visitante].filter(Boolean).map((e) => e.toLowerCase());
+    const fase = String(d?.subtema || '').trim().toLowerCase();
+    const coincideEquipo = equipos.some((eq) => listaTierA.some((t) => eq.includes(t.toLowerCase())));
+    const coincideFase = fase && listaTierA.some((t) => fase.includes(t.toLowerCase()));
+    return coincideEquipo || coincideFase;
+  };
+  // Un partido "calza por competencia" si el tema está en la lista del
+  // grupo Y, si esa competencia está en modo tier_a, además es destacado.
+  const temaCalzaConGrupo = (d) => {
+    if (!d?.tema || !competenciasGrupo.includes(d.tema)) return false;
+    if (modoCompetencias[d.tema] === 'tier_a' && !esPartidoDestacado(d)) return false;
+    return true;
+  };
+
   const sumaPorUsuario = {};
   idsUnicos.forEach((id) => { sumaPorUsuario[id] = 0; });
   (historial || []).forEach((h) => {
@@ -168,7 +212,7 @@ async function rutaRankingGrupo(req, res) {
       // (mejor sumar de más un caso raro que restarle diamantes reales a un
       // jugador por un dato faltante).
       if (d) {
-        const temaCalza = d.tema && competenciasGrupo.includes(d.tema);
+        const temaCalza = temaCalzaConGrupo(d);
         const equipoCalza = equiposSeguidosNorm.length > 0 && (
           equiposSeguidosNorm.includes(normEquipo(d.equipo_local)) ||
           equiposSeguidosNorm.includes(normEquipo(d.equipo_visitante))
@@ -206,7 +250,7 @@ async function rutaRankingGrupo(req, res) {
   if (idsDesafiosVotos.length > 0) {
     const { data: desafiosVotos, error: errDesafiosVotos } = await supabase
       .from('desafios_mvp')
-      .select('id, categoria, es_general, tema, equipo_local, equipo_visitante, fecha_expiracion, resultado_oficial, goles_local_oficial, goles_visitante_oficial')
+      .select('id, categoria, es_general, tema, subtema, equipo_local, equipo_visitante, es_destacado, fecha_expiracion, resultado_oficial, goles_local_oficial, goles_visitante_oficial')
       .in('id', idsDesafiosVotos);
     if (errDesafiosVotos) {
       return res.status(500).json({ error: errDesafiosVotos.message });
@@ -229,7 +273,7 @@ async function rutaRankingGrupo(req, res) {
     if (!desde || !desafio.fecha_expiracion || desafio.fecha_expiracion < desde || desafio.fecha_expiracion > finVentana) return;
 
     if (hayRestriccion) {
-      const temaCalza = desafio.tema && competenciasGrupo.includes(desafio.tema);
+      const temaCalza = temaCalzaConGrupo(desafio);
       const equipoCalza = equiposSeguidosNorm.length > 0 && (
         equiposSeguidosNorm.includes(normEquipo(desafio.equipo_local)) ||
         equiposSeguidosNorm.includes(normEquipo(desafio.equipo_visitante))

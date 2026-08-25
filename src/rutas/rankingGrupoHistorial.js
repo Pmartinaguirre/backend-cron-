@@ -31,7 +31,7 @@ async function rutaRankingGrupoHistorial(req, res) {
 
   const { data: sala, error: errSala } = await supabase
     .from('salas_privadas_mvp')
-    .select('id, admin_id, juego_activo, fecha_inicio_conteo, fecha_fin_conteo, competencias, equipos_seguidos')
+    .select('id, admin_id, juego_activo, fecha_inicio_conteo, fecha_fin_conteo, competencias, equipos_seguidos, modo_competencias')
     .eq('id', salaId)
     .single();
   if (errSala || !sala) {
@@ -73,6 +73,40 @@ async function rutaRankingGrupoHistorial(req, res) {
   const hayRestriccion = competenciasGrupo.length > 0 || equiposSeguidosGrupo.length > 0;
   const equiposSeguidosNorm = equiposSeguidosGrupo.map(normEquipo);
 
+  // "Solo partidos destacados" (mismo fix que /ranking-grupo — bug
+  // reportado: "el partido Everton vs U. de Concepción no debería contar,
+  // ese grupo solo sigue los partidos destacados"). modo_competencias
+  // (tema -> 'todos' | 'tier_a') no se estaba mirando acá tampoco.
+  const modoCompetencias = sala.modo_competencias || {};
+  const competenciasTierA = competenciasGrupo.filter((c) => modoCompetencias[c] === 'tier_a');
+  const equiposTierAPorCompetencia = {};
+  if (competenciasTierA.length > 0) {
+    const { data: tierAData, error: errTierA } = await supabase
+      .from('equipos_tier_a_mvp')
+      .select('competencia, equipo')
+      .in('competencia', competenciasTierA);
+    if (errTierA) return res.status(500).json({ error: errTierA.message });
+    (tierAData || []).forEach((fila) => {
+      if (!equiposTierAPorCompetencia[fila.competencia]) equiposTierAPorCompetencia[fila.competencia] = [];
+      equiposTierAPorCompetencia[fila.competencia].push(fila.equipo);
+    });
+  }
+  const esPartidoDestacado = (d) => {
+    if (d?.es_destacado) return true;
+    const listaTierA = (d?.tema && equiposTierAPorCompetencia[d.tema]) || [];
+    if (listaTierA.length === 0) return false;
+    const equipos = [d?.equipo_local, d?.equipo_visitante].filter(Boolean).map((e) => e.toLowerCase());
+    const fase = String(d?.subtema || '').trim().toLowerCase();
+    const coincideEquipo = equipos.some((eq) => listaTierA.some((t) => eq.includes(t.toLowerCase())));
+    const coincideFase = fase && listaTierA.some((t) => fase.includes(t.toLowerCase()));
+    return coincideEquipo || coincideFase;
+  };
+  const temaCalzaConGrupo = (d) => {
+    if (!d?.tema || !competenciasGrupo.includes(d.tema)) return false;
+    if (modoCompetencias[d.tema] === 'tier_a' && !esPartidoDestacado(d)) return false;
+    return true;
+  };
+
   // Diamantes REALES pagados por partido (para no recalcular el monto con
   // una fórmula — mismo motivo que en rankingGrupo.js: un reset de
   // diamantes no debe volver a aparecer acá). resolver.js paga como máximo
@@ -111,7 +145,7 @@ async function rutaRankingGrupoHistorial(req, res) {
   if (idsDesafios.length > 0) {
     const { data: desafios, error: errDesafios } = await supabase
       .from('desafios_mvp')
-      .select('id, categoria, es_general, tema, equipo_local, equipo_visitante, fecha_expiracion, resultado_oficial, goles_local_oficial, goles_visitante_oficial')
+      .select('id, categoria, es_general, tema, subtema, equipo_local, equipo_visitante, es_destacado, fecha_expiracion, resultado_oficial, goles_local_oficial, goles_visitante_oficial')
       .in('id', idsDesafios);
     if (errDesafios) return res.status(500).json({ error: errDesafios.message });
     (desafios || []).forEach((d) => { desafioPorId[d.id] = d; });
@@ -126,7 +160,7 @@ async function rutaRankingGrupoHistorial(req, res) {
     if (!desafio.fecha_expiracion || desafio.fecha_expiracion < desde || desafio.fecha_expiracion > hasta) return;
 
     if (hayRestriccion) {
-      const temaCalza = desafio.tema && competenciasGrupo.includes(desafio.tema);
+      const temaCalza = temaCalzaConGrupo(desafio);
       const equipoCalza = equiposSeguidosNorm.length > 0 && (
         equiposSeguidosNorm.includes(normEquipo(desafio.equipo_local)) ||
         equiposSeguidosNorm.includes(normEquipo(desafio.equipo_visitante))
