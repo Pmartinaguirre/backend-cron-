@@ -27,6 +27,8 @@ Backend chico (Node/Express) con los 4 endpoints que `cron-job.org` llama por ho
   - La resolución de nombres es sobre el **backlog global** de `jugadores_perfil` con `nombre_corto` pendiente (no solo los jugadores de los equipos que le tocó procesar a esa corrida puntual) — así el tope por corrida se aplica sobre el pendiente real completo, no sobre un subconjunto chico que dependía de qué equipos rotaron esa vez.
   - Para el backfill inicial (cientos de equipos/jugadores nunca vistos) conviene dispararlo varias veces seguidas a mano, esperando a que la respuesta de la corrida anterior diga `iniciado: true` de nuevo (o revisando los logs) antes de volver a llamarlo, hasta que la consulta de arriba muestre `pendientes = 0` y `equipos_con_plantel = 159` (o el total real de equipos controlables).
 
+- **`/ganador-semanal`** — corre 1 vez por semana, poco después de que cierra la semana futbolera (martes 00:00 Chile). Por cada grupo, suma los diamantes que ganó cada miembro DURANTE esa semana (solo contando a quien ya era miembro) y guarda al que más sumó como "Ganador semanal" (medalla 🏅 en la tabla de posiciones del grupo, ver `grupo_ganadores_semanales`). Si ya existe un registro para ese grupo+semana, no hace nada (así no importa si corre más de una vez). **Sugerencia de horario: martes 00:10 (hora Chile).** `?semana=N` permite recalcular una semana puntual a mano.
+
 - **`/invitar-a-grupo`** (POST) — invita a un amigo a un grupo (sala privada). Body: `{ salaId, email, invitadorId }`. Verifica que `invitadorId` sea el admin de esa sala. Si el mail ya es de un jugador registrado, lo agrega directo como miembro; si no, manda la invitación nativa de Supabase (mismo Resend ya configurado en Auth) y guarda una fila pendiente que se vincula sola cuando esa persona termine de registrarse (ver Registro.jsx).
 
 Todos exigen el header `X-Cron-Secret` con el valor de tu `CRON_SECRET` (ver abajo) — sin eso, responden 401 — EXCEPTO `/equipos` e `/invitar-a-grupo`, que los llama directo el navegador del jugador (pedirles el secreto obligaría a exponerlo en el código del frontend); `/invitar-a-grupo` verifica la autorización de otra forma (ver arriba).
@@ -68,6 +70,7 @@ Crea un cron job por endpoint:
 | `/cuotas` | Cada 30-60 minutos | GET |
 | `/crear-partidos` | Cada 6-12 horas | GET |
 | `/refrescar-planteles` | 1 vez al día | GET |
+| `/ganador-semanal` | 1 vez por semana, martes 00:10 (hora Chile) | GET |
 
 En cada cron job de cron-job.org, en la sección de headers personalizados (Advanced / Headers), agrega:
 

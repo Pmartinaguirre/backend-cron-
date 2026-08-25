@@ -18,6 +18,45 @@
 const { supabase } = require('../supabaseClient');
 const { parsearMarcador } = require('../diamantes');
 
+// Numeración de semana futbolera (martes 00:00 Chile a martes siguiente) —
+// MISMA fórmula que usa ganadorSemanal.js y el Ranking global
+// (sementomvp.jsx), copiada acá para el filtro opcional ?periodo=semana (a
+// pedido: "cuando se termina una semana debes agregar los filtros de
+// semanas... porque se debe resetear la tabla que sale en el grupo"). Si
+// esta fórmula cambia en esos otros dos lugares, hay que cambiarla acá
+// también para que los 3 coincidan en qué semana es cada fecha.
+const MS_SEMANA = 7 * 24 * 60 * 60 * 1000;
+const ANCLA_MARTES_GRILLA = new Date('2026-07-21T04:00:00.000Z').getTime();
+function numeroSemanaISOde(fechaMediodiaUTC) {
+  const dUTC = new Date(fechaMediodiaUTC);
+  const diaISO = (dUTC.getUTCDay() + 6) % 7;
+  dUTC.setUTCDate(dUTC.getUTCDate() - diaISO + 3);
+  const primerJueves = new Date(Date.UTC(dUTC.getUTCFullYear(), 0, 4));
+  const diaPrimerJueves = (primerJueves.getUTCDay() + 6) % 7;
+  primerJueves.setUTCDate(primerJueves.getUTCDate() - diaPrimerJueves + 3);
+  return 1 + Math.round((dUTC - primerJueves) / (7 * 24 * 60 * 60 * 1000));
+}
+function martesAperturaMasCercano(t) {
+  const semanasDesdeAncla = Math.floor((t - ANCLA_MARTES_GRILLA) / MS_SEMANA);
+  return ANCLA_MARTES_GRILLA + semanasDesdeAncla * MS_SEMANA;
+}
+const numeroSemanaDe = (t) => {
+  const inicio = martesAperturaMasCercano(t);
+  const lunesCierre = inicio + 6 * 24 * 60 * 60 * 1000 + 12 * 60 * 60 * 1000;
+  return numeroSemanaISOde(lunesCierre);
+};
+const rangoDeSemana = (n) => {
+  let inicio = martesAperturaMasCercano(Date.now());
+  let intento = numeroSemanaDe(inicio);
+  let guardia = 0;
+  while (intento !== n && guardia < 60) {
+    inicio += (n > intento ? 1 : -1) * MS_SEMANA;
+    intento = numeroSemanaDe(inicio);
+    guardia++;
+  }
+  return { inicio, fin: inicio + MS_SEMANA };
+};
+
 // Orden de la tabla de posiciones del grupo (a pedido: "ante igualdad de
 // puntos pon primero a los que tengan más marcador exacto, luego dif, luego
 // PA y luego PJ") — desempate en cascada: 💎 diamantesGrupo, luego EX
@@ -39,7 +78,7 @@ async function rutaRankingGrupo(req, res) {
 
   const { data: sala, error: errSala } = await supabase
     .from('salas_privadas_mvp')
-    .select('id, nombre, admin_id, juego_activo, fecha_inicio_conteo, fecha_fin_conteo, competencias, equipos_seguidos')
+    .select('id, nombre, admin_id, juego_activo, fecha_inicio_conteo, fecha_fin_conteo, competencias, equipos_seguidos, modo_competencias')
     .eq('id', salaId)
     .single();
   if (errSala || !sala) {
@@ -80,18 +119,45 @@ async function rutaRankingGrupo(req, res) {
 
   // Fin de la ventana: si el grupo está pausado, fecha_fin_conteo (quedó
   // congelado ahí); si está en juego, ahora mismo.
-  const finVentana = sala.juego_activo ? new Date().toISOString() : (sala.fecha_fin_conteo || new Date().toISOString());
+  const finVentanaGrupo = sala.juego_activo ? new Date().toISOString() : (sala.fecha_fin_conteo || new Date().toISOString());
+
+  // Filtro opcional por semana futbolera puntual (a pedido: "cuando se
+  // termina una semana debes agregar los filtros de semanas... porque se
+  // debe resetear la tabla que sale en el grupo, porque está recién
+  // empezando la segunda semana de juego"). ?periodo=semana intersecta la
+  // ventana normal del grupo (desde que cada uno se sumó, hasta ahora/
+  // pausa) con el rango de ESA semana puntual — ?semana=N elige cuál
+  // (default: la semana en curso). Sin ?periodo=semana, se comporta
+  // exactamente igual que antes (acumulado desde que el grupo/jugador
+  // arrancó).
+  const periodoPedido = req.query?.periodo === 'semana' ? 'semana' : null;
+  let numeroSemanaFiltro = null;
+  let inicioSemanaFiltro = null;
+  let finSemanaFiltro = null;
+  if (periodoPedido === 'semana') {
+    const semanaQuery = req.query?.semana ? Number(req.query.semana) : null;
+    numeroSemanaFiltro = Number.isFinite(semanaQuery) && semanaQuery > 0 ? semanaQuery : numeroSemanaDe(Date.now());
+    const rango = rangoDeSemana(numeroSemanaFiltro);
+    inicioSemanaFiltro = rango.inicio;
+    finSemanaFiltro = rango.fin;
+  }
+  const finVentana = finSemanaFiltro !== null
+    ? new Date(Math.min(new Date(finVentanaGrupo).getTime(), finSemanaFiltro)).toISOString()
+    : finVentanaGrupo;
 
   // Inicio POR JUGADOR: el más tardío entre "cuándo arrancó a contar el
-  // grupo" y "cuándo se sumó este jugador al grupo" — así alguien que entra
-  // después no se lleva diamantes de partidos anteriores a que existiera
-  // para el grupo, y alguien que ya estaba antes de que el grupo arrancara
-  // a contar tampoco se lleva diamantes de antes de esa fecha.
+  // grupo", "cuándo se sumó este jugador al grupo" y (si hay filtro de
+  // semana) "cuándo arranca esa semana" — así alguien que entra después no
+  // se lleva diamantes de partidos anteriores a que existiera para el
+  // grupo, y alguien que ya estaba antes de que el grupo arrancara a
+  // contar tampoco se lleva diamantes de antes de esa fecha.
   const inicioPorUsuario = {};
   miembros.forEach((m) => {
     const fechaUnion = m.fecha_union ? new Date(m.fecha_union).getTime() : 0;
     const fechaInicioGrupo = new Date(sala.fecha_inicio_conteo).getTime();
-    inicioPorUsuario[m.usuario_id] = new Date(Math.max(fechaUnion, fechaInicioGrupo)).toISOString();
+    let inicioEfectivo = Math.max(fechaUnion, fechaInicioGrupo);
+    if (inicioSemanaFiltro !== null) inicioEfectivo = Math.max(inicioEfectivo, inicioSemanaFiltro);
+    inicioPorUsuario[m.usuario_id] = new Date(inicioEfectivo).toISOString();
   });
 
   // Trae TODO el historial de estos jugadores desde el inicio más temprano
@@ -337,6 +403,11 @@ async function rutaRankingGrupo(req, res) {
     juegoActivo: sala.juego_activo,
     fechaInicioGrupo: sala.fecha_inicio_conteo,
     fechaFinGrupo: sala.fecha_fin_conteo,
+    periodo: periodoPedido || 'total',
+    numeroSemana: numeroSemanaFiltro,
+    rangoSemana: inicioSemanaFiltro !== null
+      ? { inicio: new Date(inicioSemanaFiltro).toISOString(), fin: new Date(finSemanaFiltro).toISOString() }
+      : null,
     total: jugadores.length,
     jugadores,
   });
