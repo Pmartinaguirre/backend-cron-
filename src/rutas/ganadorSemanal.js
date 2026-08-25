@@ -279,8 +279,21 @@ async function rutaGanadorSemanal(req, res) {
     .gte('fecha_expiracion', new Date(rangoNuevaSemana.inicio).toISOString())
     .lt('fecha_expiracion', new Date(rangoNuevaSemana.fin).toISOString())
     .order('fecha_expiracion', { ascending: true });
-  const partidosSemanaEntranteReales = (partidosSemanaEntranteTodos || [])
-    .filter((d) => !d.es_general && [4, 5].includes(Number(d.categoria)));
+  // FIX de duplicados (a pedido: el mail mostraba "Real Madrid vs Malaga" y
+  // "Sevilla vs Atletico Madrid" dos veces cada uno — mismo bug conocido de
+  // sementomvp.jsx: un mismo partido real puede existir DOS veces en
+  // desafios_mvp, uno Cat.4 con marcador exacto y otro Cat.5 solo-LEV. Se
+  // dedupica por equipos+día normalizados (no por fixture_id: las copias
+  // duplicadas pueden traer fixture_id distinto o vacío).
+  const normEqSemanal = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
+  const partidosPorClave = {};
+  (partidosSemanaEntranteTodos || [])
+    .filter((d) => !d.es_general && [4, 5].includes(Number(d.categoria)))
+    .forEach((d) => {
+      const clave = `${normEqSemanal(d.equipo_local)}|${normEqSemanal(d.equipo_visitante)}|${String(d.fecha_expiracion || '').slice(0, 10)}`;
+      if (!partidosPorClave[clave]) partidosPorClave[clave] = d;
+    });
+  const partidosSemanaEntranteReales = Object.values(partidosPorClave);
 
   const { data: grupos, error: errGrupos } = await supabase
     .from('salas_privadas_mvp')
