@@ -15,7 +15,16 @@
 // que más sumó en grupo_ganadores_semanales. Si ya existe un registro para
 // ese grupo+semana (unique constraint), no hace nada — así no importa si
 // el cron corre más de una vez.
+//
+// A pedido: "cuando termina una semana envía un mail a todos los jugadores
+// del grupo" con la tabla de esa semana, el ganador+medalla, el anuncio de
+// la semana nueva en juego y los partidos para pronosticar — ver
+// enviarRecapSemanal() más abajo. El mail es "mejor esfuerzo" (mismo
+// criterio que el resto de los mails de hitos en notificaciones.js): si
+// falla, se loguea y se sigue, nunca rompe el cálculo del premio.
 const { supabase } = require('../supabaseClient');
+const { calcularTablaGrupo } = require('./rankingGrupo');
+const { enviarMail, plantillaBase, FRONTEND_URL } = require('../emailHelper');
 
 // Misma numeración de semana que usa sementomvp.jsx (ver comentario ahí) —
 // una semana futbolera (martes 00:00 Chile a martes siguiente 00:00) se
@@ -64,6 +73,110 @@ const rangoDeSemana = (n) => {
   return { inicio, fin: inicio + MS_SEMANA };
 };
 
+const fmtFecha = (t) => new Intl.DateTimeFormat('es-CL', { day: 'numeric', month: 'long', timeZone: 'America/Santiago' }).format(new Date(t));
+const fmtFechaHoraPartido = (iso) => new Intl.DateTimeFormat('es-CL', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'America/Santiago' }).format(new Date(iso));
+
+// Mail de recap semanal (a pedido): tabla de posiciones de la semana que
+// terminó, ganador+medalla, anuncio de la semana que arranca hoy y sus
+// partidos para pronosticar, botón "Ir a pronosticar partidos" y un deseo
+// de suerte. Se manda a TODOS los miembros del grupo (incluido el admin,
+// aunque no tenga fila propia en salas_privadas_miembros_mvp — mismo
+// criterio que /ranking-grupo). "Mejor esfuerzo": cualquier error acá se
+// loguea y no se propaga, así nunca hace fallar el cálculo del premio.
+async function enviarRecapSemanal({
+  grupo, semanaObjetivo, rangoObjetivo, semanaSiguiente, rangoSiguiente,
+  tablaSemana, ganadorId, diamantesGanador, partidosSemanaEntrante,
+}) {
+  try {
+    const { data: miembrosData } = await supabase
+      .from('salas_privadas_miembros_mvp')
+      .select('usuario_id')
+      .eq('sala_id', grupo.id);
+    const idsDestinatarios = new Set((miembrosData || []).map((m) => m.usuario_id));
+    if (grupo.admin_id) idsDestinatarios.add(grupo.admin_id);
+    if (idsDestinatarios.size === 0) return;
+
+    const { data: usuariosData } = await supabase
+      .from('usuarios')
+      .select('id, nombre, email')
+      .in('id', [...idsDestinatarios]);
+    if (!usuariosData || usuariosData.length === 0) return;
+
+    const nombrePorId = {};
+    (tablaSemana?.jugadores || []).forEach((j) => { nombrePorId[j.usuarioId] = j.nombre; });
+
+    // Tabla de posiciones DE LA SEMANA que terminó (a pedido: "tabla de
+    // posiciones de la semana jugada"), con el ganador resaltado.
+    const filasTabla = (tablaSemana?.jugadores || []).map((j) => {
+      const esGanador = j.usuarioId === ganadorId;
+      return `
+        <tr style="${esGanador ? 'background:#ecfdf5;font-weight:bold;' : ''}">
+          <td style="padding:6px 8px;border-bottom:1px solid #eee;">${j.posicion}º${esGanador ? ' 🏅' : ''}</td>
+          <td style="padding:6px 8px;border-bottom:1px solid #eee;">${j.nombre}</td>
+          <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:center;">${j.pj}</td>
+          <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:center;">${j.pa}</td>
+          <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right;color:#059669;">💎 ${j.diamantesGrupo}</td>
+        </tr>`;
+    }).join('');
+    const tablaHtml = `
+      <table style="width:100%;border-collapse:collapse;font-size:13px;margin:10px 0;">
+        <thead>
+          <tr style="background:#f5f5f5;">
+            <th style="padding:6px 8px;text-align:left;">#</th>
+            <th style="padding:6px 8px;text-align:left;">Jugador</th>
+            <th style="padding:6px 8px;">PJ</th>
+            <th style="padding:6px 8px;">PA</th>
+            <th style="padding:6px 8px;text-align:right;">💎</th>
+          </tr>
+        </thead>
+        <tbody>${filasTabla || '<tr><td colspan="5" style="padding:10px;text-align:center;color:#999;">Sin pronósticos esta semana.</td></tr>'}</tbody>
+      </table>`;
+
+    // Ganador semanal + medalla (a pedido: "destacar el jugador ganador
+    // semanal y su medalla").
+    const nombreGanador = ganadorId ? (nombrePorId[ganadorId] || 'un jugador') : null;
+    const bloqueGanador = nombreGanador
+      ? `<p style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:10px 14px;"><strong>🏅 Ganador de la semana ${semanaObjetivo}:</strong> ${nombreGanador}, con 💎 ${diamantesGanador} diamantes.</p>`
+      : `<p style="color:#6b7280;">Nadie sumó diamantes esta semana en el grupo.</p>`;
+
+    // Partidos de la semana entrante (a pedido: "mostrar los partidos que
+    // se van a pronosticar en la semana entrante").
+    const filasPartidos = (partidosSemanaEntrante || []).slice(0, 10).map((d) => `
+      <tr>
+        <td style="padding:5px 8px;border-bottom:1px solid #eee;color:#6b7280;font-size:12px;white-space:nowrap;">${fmtFechaHoraPartido(d.fecha_expiracion)}</td>
+        <td style="padding:5px 8px;border-bottom:1px solid #eee;font-weight:bold;">${d.equipo_local} vs ${d.equipo_visitante}</td>
+      </tr>`).join('');
+    const restantes = (partidosSemanaEntrante || []).length - 10;
+    const extraPartidos = restantes > 0 ? `<p style="font-size:12px;color:#6b7280;">y ${restantes} partido${restantes === 1 ? '' : 's'} más...</p>` : '';
+    const partidosHtml = filasPartidos
+      ? `<table style="width:100%;border-collapse:collapse;font-size:13px;margin:10px 0;"><tbody>${filasPartidos}</tbody></table>${extraPartidos}`
+      : `<p style="color:#6b7280;">Todavía no hay partidos programados para esta semana — vuelve a mirar más tarde.</p>`;
+
+    const cuerpoComun = `
+      <p>La semana ${semanaObjetivo} (${fmtFecha(rangoObjetivo.inicio)} al ${fmtFecha(rangoObjetivo.fin - 1)}) ya terminó en <strong>${grupo.nombre}</strong>. Así quedó la tabla de esa semana:</p>
+      ${tablaHtml}
+      ${bloqueGanador}
+      <p style="margin-top:18px;">🟢 <strong>Ya está en juego la semana ${semanaSiguiente}</strong>, del ${fmtFecha(rangoSiguiente.inicio)} al ${fmtFecha(rangoSiguiente.fin - 1)}.</p>
+      <p style="margin-top:10px;font-weight:bold;">Partidos para pronosticar esta semana:</p>
+      ${partidosHtml}
+      <p style="margin-top:18px;">¡Mucha suerte a todos esta semana! ⚽🍀</p>
+    `;
+
+    for (const usuario of usuariosData) {
+      if (!usuario.email) continue;
+      const html = plantillaBase({
+        titulo: `"${grupo.nombre}" — Resumen semana ${semanaObjetivo} y arranca la ${semanaSiguiente}`,
+        cuerpoHtml: `<p>Hola ${usuario.nombre || 'jugador'},</p>${cuerpoComun}`,
+        botonTexto: 'Ir a pronosticar partidos',
+        botonUrl: `${FRONTEND_URL}/sementomvp?tab=futbol&vista=pronostico`,
+      });
+      await enviarMail({ to: usuario.email, subject: `"${grupo.nombre}": resumen semana ${semanaObjetivo} y arranca la ${semanaSiguiente}`, html });
+    }
+  } catch (e) {
+    console.error('[ganadorSemanal] Error mandando el mail de recap semanal:', e.message);
+  }
+}
+
 async function rutaGanadorSemanal(req, res) {
   // Semana a calcular: por default, la que acaba de cerrar (la anterior a
   // la actual). ?semana=N para recalcular una puntual a mano.
@@ -74,9 +187,28 @@ async function rutaGanadorSemanal(req, res) {
   }
   const { inicio, fin } = rangoDeSemana(semanaObjetivo);
 
+  // Semana que queda EN JUEGO al momento de correr este cron (a pedido:
+  // "informar que está en juego la semana 36 a partir de hoy") — se basa
+  // en la fecha real de HOY, no en semanaObjetivo+1, para que un
+  // recálculo manual de una semana vieja (?semana=N) no anuncie una
+  // semana "actual" equivocada en el mail.
+  const rangoNuevaSemana = rangoDeSemana(semanaActual);
+
+  // Partidos reales (Cat.4/5, no generales) dentro del rango de la semana
+  // que queda en juego — se trae UNA vez para todos los grupos y se
+  // filtra por grupo más abajo (competencias/equipos_seguidos/tier_a).
+  const { data: partidosSemanaEntranteTodos } = await supabase
+    .from('desafios_mvp')
+    .select('id, tema, subtema, equipo_local, equipo_visitante, fecha_expiracion, categoria, es_general')
+    .gte('fecha_expiracion', new Date(rangoNuevaSemana.inicio).toISOString())
+    .lt('fecha_expiracion', new Date(rangoNuevaSemana.fin).toISOString())
+    .order('fecha_expiracion', { ascending: true });
+  const partidosSemanaEntranteReales = (partidosSemanaEntranteTodos || [])
+    .filter((d) => !d.es_general && [4, 5].includes(Number(d.categoria)));
+
   const { data: grupos, error: errGrupos } = await supabase
     .from('salas_privadas_mvp')
-    .select('id, nombre, competencias, equipos_seguidos, modo_competencias');
+    .select('id, nombre, admin_id, competencias, equipos_seguidos, modo_competencias');
   if (errGrupos) {
     return res.status(500).json({ error: errGrupos.message });
   }
@@ -85,7 +217,8 @@ async function rutaGanadorSemanal(req, res) {
 
   for (const grupo of grupos || []) {
     try {
-      // Ya calculado antes para este grupo+semana — no lo repite.
+      // Ya calculado antes para este grupo+semana — no lo repite (tampoco
+      // reenvía el mail: si ya se calculó, ya se mandó la vez anterior).
       const { data: yaExiste } = await supabase
         .from('grupo_ganadores_semanales')
         .select('id')
@@ -174,27 +307,50 @@ async function rutaGanadorSemanal(req, res) {
         const coincideFase = fase && listaTierA.some((t) => fase.includes(t.toLowerCase()));
         return coincideEquipo || coincideFase;
       };
+      // Extraído a función propia (antes vivía inline dentro del forEach de
+      // historial) para poder reutilizarlo también al filtrar los partidos
+      // de la semana entrante que van en el mail de recap.
+      const partidoCalzaConGrupo = (d) => {
+        if (!hayRestriccion) return true;
+        const temaCalza = d.tema && competenciasGrupo.includes(d.tema)
+          && (modoCompetencias[d.tema] !== 'tier_a' || esPartidoDestacado(d));
+        const equipoCalza = equiposSeguidosNorm.length > 0 && (
+          equiposSeguidosNorm.includes(normEquipo(d.equipo_local)) ||
+          equiposSeguidosNorm.includes(normEquipo(d.equipo_visitante))
+        );
+        return temaCalza || equipoCalza;
+      };
 
       const sumaPorUsuario = {};
       (historial || []).forEach((h) => {
-        if (h.desafio_id && hayRestriccion) {
+        if (h.desafio_id) {
           const d = desafioPorId[h.desafio_id];
-          if (d) {
-            const temaCalza = d.tema && competenciasGrupo.includes(d.tema)
-              && (modoCompetencias[d.tema] !== 'tier_a' || esPartidoDestacado(d));
-            const equipoCalza = equiposSeguidosNorm.length > 0 && (
-              equiposSeguidosNorm.includes(normEquipo(d.equipo_local)) ||
-              equiposSeguidosNorm.includes(normEquipo(d.equipo_visitante))
-            );
-            if (!temaCalza && !equipoCalza) return;
-          }
+          if (d && !partidoCalzaConGrupo(d)) return;
         }
         sumaPorUsuario[h.usuario_id] = (sumaPorUsuario[h.usuario_id] || 0) + (h.monto || 0);
       });
 
+      // Tabla de posiciones DE LA SEMANA que acaba de cerrar (a pedido: mail
+      // de recap con "tabla de posiciones de la semana jugada") — mismo
+      // cálculo exacto que usa MisGrupos.jsx con el filtro Semana, así el
+      // mail y la app siempre muestran el mismo número.
+      let tablaSemana = null;
+      try {
+        tablaSemana = await calcularTablaGrupo(grupo.id, { periodo: 'semana', semana: semanaObjetivo });
+      } catch (eTabla) {
+        console.error('[ganadorSemanal] No se pudo calcular la tabla de la semana para el mail:', eTabla.message);
+      }
+      const partidosGrupoSemanaEntrante = partidosSemanaEntranteReales.filter((d) => partidoCalzaConGrupo(d));
+
       const entradas = Object.entries(sumaPorUsuario);
       if (entradas.length === 0) {
         resultado.grupos.push({ sala_id: grupo.id, nombre: grupo.nombre, sinDiamantesEsaSemana: true });
+        await enviarRecapSemanal({
+          grupo, semanaObjetivo, rangoObjetivo: { inicio, fin },
+          semanaSiguiente: semanaActual, rangoSiguiente: rangoNuevaSemana,
+          tablaSemana, ganadorId: null, diamantesGanador: 0,
+          partidosSemanaEntrante: partidosGrupoSemanaEntrante,
+        });
         continue;
       }
       entradas.sort((a, b) => b[1] - a[1]);
@@ -209,6 +365,12 @@ async function rutaGanadorSemanal(req, res) {
       if (errInsert) throw errInsert;
 
       resultado.grupos.push({ sala_id: grupo.id, nombre: grupo.nombre, ganador: usuarioGanadorId, diamantes: diamantesGanador });
+      await enviarRecapSemanal({
+        grupo, semanaObjetivo, rangoObjetivo: { inicio, fin },
+        semanaSiguiente: semanaActual, rangoSiguiente: rangoNuevaSemana,
+        tablaSemana, ganadorId: usuarioGanadorId, diamantesGanador,
+        partidosSemanaEntrante: partidosGrupoSemanaEntrante,
+      });
     } catch (e) {
       resultado.errores.push({ sala_id: grupo.id, error: e.message });
     }

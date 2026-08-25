@@ -70,10 +70,18 @@ function compararJugadoresGrupo(a, b) {
     || (b.pj - a.pj);
 }
 
-async function rutaRankingGrupo(req, res) {
-  const salaId = req.query?.sala_id;
+// Calcula la tabla de posiciones del grupo — extraído a función propia (a
+// pedido: "cuando termina una semana envía un mail... con la tabla de
+// posiciones de la semana jugada") para poder reutilizar EXACTAMENTE el
+// mismo cálculo desde ganadorSemanal.js al armar el mail de recap, sin
+// duplicar toda esta lógica de filtros. rutaRankingGrupo (más abajo) es
+// ahora un envoltorio fino que solo lee query params y llama acá.
+// Tira una excepción { status, message } en vez de contestar res
+// directamente — quien llama decide qué hacer con el error (responder
+// HTTP, o solo loguear y seguir con el resto de los grupos del cron).
+async function calcularTablaGrupo(salaId, { periodo = null, semana = null } = {}) {
   if (!salaId) {
-    return res.status(400).json({ error: 'Falta el parámetro "sala_id".' });
+    throw Object.assign(new Error('Falta el parámetro "sala_id".'), { status: 400 });
   }
 
   const { data: sala, error: errSala } = await supabase
@@ -82,7 +90,7 @@ async function rutaRankingGrupo(req, res) {
     .eq('id', salaId)
     .single();
   if (errSala || !sala) {
-    return res.status(404).json({ error: 'Grupo no encontrado.' });
+    throw Object.assign(new Error('Grupo no encontrado.'), { status: 404 });
   }
 
   const { data: miembrosData, error: errMiembros } = await supabase
@@ -90,7 +98,7 @@ async function rutaRankingGrupo(req, res) {
     .select('usuario_id, fecha_union')
     .eq('sala_id', salaId);
   if (errMiembros) {
-    return res.status(500).json({ error: errMiembros.message });
+    throw Object.assign(new Error(errMiembros.message), { status: 500 });
   }
 
   // El admin cuenta como miembro aunque no tenga fila en
@@ -103,7 +111,7 @@ async function rutaRankingGrupo(req, res) {
   }
   const idsUnicos = [...new Set(miembros.map((m) => m.usuario_id))];
   if (idsUnicos.length === 0) {
-    return res.json({ salaId, juegoActivo: sala.juego_activo, fechaInicioGrupo: sala.fecha_inicio_conteo, fechaFinGrupo: sala.fecha_fin_conteo, jugadores: [] });
+    return { salaId, juegoActivo: sala.juego_activo, fechaInicioGrupo: sala.fecha_inicio_conteo, fechaFinGrupo: sala.fecha_fin_conteo, jugadores: [] };
   }
 
   const { data: usuarios, error: errUsuarios } = await supabase
@@ -111,7 +119,7 @@ async function rutaRankingGrupo(req, res) {
     .select('id, nombre, avatar_url')
     .in('id', idsUnicos);
   if (errUsuarios) {
-    return res.status(500).json({ error: errUsuarios.message });
+    throw Object.assign(new Error(errUsuarios.message), { status: 500 });
   }
   const nombrePorId = {};
   const avatarUrlPorId = {};
@@ -130,12 +138,12 @@ async function rutaRankingGrupo(req, res) {
   // (default: la semana en curso). Sin ?periodo=semana, se comporta
   // exactamente igual que antes (acumulado desde que el grupo/jugador
   // arrancó).
-  const periodoPedido = req.query?.periodo === 'semana' ? 'semana' : null;
+  const periodoPedido = periodo === 'semana' ? 'semana' : null;
   let numeroSemanaFiltro = null;
   let inicioSemanaFiltro = null;
   let finSemanaFiltro = null;
   if (periodoPedido === 'semana') {
-    const semanaQuery = req.query?.semana ? Number(req.query.semana) : null;
+    const semanaQuery = semana ? Number(semana) : null;
     numeroSemanaFiltro = Number.isFinite(semanaQuery) && semanaQuery > 0 ? semanaQuery : numeroSemanaDe(Date.now());
     const rango = rangoDeSemana(numeroSemanaFiltro);
     inicioSemanaFiltro = rango.inicio;
@@ -171,7 +179,7 @@ async function rutaRankingGrupo(req, res) {
     .gte('fecha_creacion', inicioMasTemprano)
     .lte('fecha_creacion', finVentana);
   if (errHist) {
-    return res.status(500).json({ error: errHist.message });
+    throw Object.assign(new Error(errHist.message), { status: 500 });
   }
 
   // FILTRO POR COMPETENCIA/EQUIPOS DEL GRUPO (a pedido, bug reportado: "creé
@@ -211,7 +219,7 @@ async function rutaRankingGrupo(req, res) {
       .select('id, tema, subtema, equipo_local, equipo_visitante, es_destacado')
       .in('id', idsDesafiosReferenciados);
     if (errDesafiosRef) {
-      return res.status(500).json({ error: errDesafiosRef.message });
+      throw Object.assign(new Error(errDesafiosRef.message), { status: 500 });
     }
     (desafiosRef || []).forEach((d) => { desafioPorId[d.id] = d; });
   }
@@ -242,7 +250,7 @@ async function rutaRankingGrupo(req, res) {
       .select('competencia, equipo')
       .in('competencia', competenciasTierA);
     if (errTierA) {
-      return res.status(500).json({ error: errTierA.message });
+      throw Object.assign(new Error(errTierA.message), { status: 500 });
     }
     (tierAData || []).forEach((fila) => {
       if (!equiposTierAPorCompetencia[fila.competencia]) equiposTierAPorCompetencia[fila.competencia] = [];
@@ -308,7 +316,7 @@ async function rutaRankingGrupo(req, res) {
     .select('usuario_id, desafio_id, eleccion, respuesta_extra')
     .in('usuario_id', idsUnicos);
   if (errVotos) {
-    return res.status(500).json({ error: errVotos.message });
+    throw Object.assign(new Error(errVotos.message), { status: 500 });
   }
 
   const idsDesafiosVotos = [...new Set((votos || []).map((v) => v.desafio_id).filter(Boolean))];
@@ -319,7 +327,7 @@ async function rutaRankingGrupo(req, res) {
       .select('id, categoria, es_general, tema, subtema, equipo_local, equipo_visitante, es_destacado, fecha_expiracion, resultado_oficial, goles_local_oficial, goles_visitante_oficial')
       .in('id', idsDesafiosVotos);
     if (errDesafiosVotos) {
-      return res.status(500).json({ error: errDesafiosVotos.message });
+      throw Object.assign(new Error(errDesafiosVotos.message), { status: 500 });
     }
     (desafiosVotos || []).forEach((d) => { desafioStatsPorId[d.id] = d; });
   }
@@ -398,7 +406,7 @@ async function rutaRankingGrupo(req, res) {
     j.posicion = jugadores.filter((x) => compararJugadoresGrupo(x, j) < 0).length + 1;
   });
 
-  res.json({
+  return {
     salaId,
     juegoActivo: sala.juego_activo,
     fechaInicioGrupo: sala.fecha_inicio_conteo,
@@ -410,7 +418,23 @@ async function rutaRankingGrupo(req, res) {
       : null,
     total: jugadores.length,
     jugadores,
-  });
+  };
 }
 
-module.exports = { rutaRankingGrupo };
+// GET /ranking-grupo?sala_id=<id>[&periodo=semana&semana=N] — envoltorio
+// HTTP fino sobre calcularTablaGrupo (ver arriba). Sin exigirSecreto (mismo
+// criterio que /equipos, /posiciones-liga): de solo lectura, lo llama
+// directo el navegador del jugador.
+async function rutaRankingGrupo(req, res) {
+  try {
+    const resultado = await calcularTablaGrupo(req.query?.sala_id, {
+      periodo: req.query?.periodo,
+      semana: req.query?.semana,
+    });
+    res.json(resultado);
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+}
+
+module.exports = { rutaRankingGrupo, calcularTablaGrupo };
