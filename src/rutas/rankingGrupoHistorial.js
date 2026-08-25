@@ -202,6 +202,12 @@ async function rutaRankingGrupoHistorial(req, res) {
       }
     }
 
+    // Marcador real + apuesta del jugador (a pedido: "saca el vs y agrega
+    // el marcador real... y pones (tú: 3-1)") — antes esta fila solo traía
+    // tipoAcierto (LEV/DIF/EXA), sin los números reales para armar ese
+    // formato en el frontend.
+    const marcadorApostado = !resueltoCat5 ? parsearMarcador(v.respuesta_extra) : null;
+
     filas.push({
       id: v.id,
       fecha: desafio.fecha_expiracion,
@@ -209,6 +215,10 @@ async function rutaRankingGrupoHistorial(req, res) {
       partido,
       equipoLocal: desafio.equipo_local || null,
       equipoVisitante: desafio.equipo_visitante || null,
+      golesLocalOficial: resueltoCat4 ? Number(desafio.goles_local_oficial) : null,
+      golesVisitaOficial: resueltoCat4 ? Number(desafio.goles_visitante_oficial) : null,
+      resultadoOficial: resueltoCat5 ? desafio.resultado_oficial : null,
+      tuApuesta: marcadorApostado ? `${marcadorApostado[0]}-${marcadorApostado[1]}` : (v.eleccion || null),
       tipoAcierto,
       diamantes: montoPorDesafio[v.desafio_id] || 0,
       esApuesta: true,
