@@ -12,6 +12,7 @@
 // una consulta de la cuota de API-Football.
 const { obtenerPosicionesDeLiga } = require('../apiFootball');
 const { TEMPORADA, leagueIdDeCompetencia } = require('../ligas');
+const { supabase } = require('../supabaseClient');
 
 const CACHE_MS = 10 * 60 * 1000;
 const cache = new Map(); // competencia -> { datos, expira }
@@ -20,6 +21,24 @@ async function rutaPosicionesLiga(req, res) {
   const competencia = req.query.competencia;
   if (!competencia) {
     return res.status(400).json({ error: 'Falta el parámetro "competencia".' });
+  }
+
+  // Override manual (a pedido: competencias como Copa Chile cuya fase de
+  // grupos API-Football no publica). Si hay una fila cargada a mano para
+  // esta competencia, se devuelve DIRECTO — pisa a la API por completo, no
+  // se mezcla. Ver crear_tabla_posiciones_manual.sql.
+  try {
+    const { data: manual } = await supabase
+      .from('posiciones_manual_mvp')
+      .select('datos')
+      .eq('competencia', competencia)
+      .maybeSingle();
+    if (manual?.datos) {
+      return res.json({ competencia, ...manual.datos, manual: true });
+    }
+  } catch (e) {
+    console.error(`[/posiciones-liga] Error consultando override manual de "${competencia}":`, e);
+    // sigue con el camino normal (API-Football) si falla la consulta manual
   }
 
   const leagueId = leagueIdDeCompetencia(competencia);
