@@ -273,16 +273,25 @@ async function rutaGanadorSemanal(req, res) {
   // Partidos reales (Cat.4/5, no generales) dentro del rango de la semana
   // que queda en juego — se trae UNA vez para todos los grupos y se
   // filtra por grupo más abajo (competencias/equipos_seguidos/tier_a).
+  // esta_activo=true: sin este filtro se colaban partidos retirados/
+  // reemplazados (huérfanos viejos de una reprogramación) que ya no se
+  // pueden pronosticar en la app pero seguían apareciendo en el mail.
   const { data: partidosSemanaEntranteTodos } = await supabase
     .from('desafios_mvp')
     .select('id, tema, subtema, equipo_local, equipo_visitante, fecha_expiracion, categoria, es_general')
+    .eq('esta_activo', true)
     .gte('fecha_expiracion', new Date(rangoNuevaSemana.inicio).toISOString())
     .lt('fecha_expiracion', new Date(rangoNuevaSemana.fin).toISOString())
     .order('fecha_expiracion', { ascending: true });
   // FIX de duplicados (a pedido: el mail mostraba "Real Madrid vs Malaga" y
-  // "Sevilla vs Atletico Madrid" dos veces cada uno — mismo bug conocido de
-  // sementomvp.jsx: un mismo partido real puede existir DOS veces en
-  // desafios_mvp, uno Cat.4 con marcador exacto y otro Cat.5 solo-LEV. Se
+  // "Sevilla vs Atletico Madrid" dos veces cada uno). Investigado en vivo:
+  // NO eran Cat.4/Cat.5 — eran dos filas Cat.4, una activa (la real, con
+  // fixture_id_api) y una huérfana esta_activo=false con fixture_id_api
+  // null, ambas con la misma fecha. El filtro esta_activo de arriba ya
+  // saca esas huérfanas del mail. Esto de acá es una segunda capa por las
+  // dudas — dedupe genérico por equipos+día (mismo criterio que usa
+  // sementomvp.jsx para el mismo tipo de bug), para el caso de que algún
+  // día SÍ haya un duplicado real Cat.4/Cat.5 los dos activos a la vez.
   // dedupica por equipos+día normalizados (no por fixture_id: las copias
   // duplicadas pueden traer fixture_id distinto o vacío).
   const normEqSemanal = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
