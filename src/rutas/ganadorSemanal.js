@@ -116,10 +116,24 @@ async function construirCalzaConGrupo(grupo) {
     const coincideFase = fase && listaTierA.some((t) => fase.includes(t.toLowerCase()));
     return coincideEquipo || coincideFase;
   };
-  const partidoCalzaConGrupo = (d) => {
+  // "No retroactivo" (a pedido: "si yo edito las competencias es para
+  // adelante en el tiempo, no retroactivo" — bug reportado: agregar LaLiga
+  // a un grupo DESPUÉS de cerrada la semana 35 infló esa semana ya cerrada
+  // con diamantes de LaLiga ganados ANTES de agregarla). Mismo criterio
+  // que rankingGrupo.js: competencias_fechas guarda desde cuándo cuenta
+  // cada competencia AGREGADA (no las que el grupo ya tenía desde el
+  // principio, esas quedan sin tope).
+  const competenciasFechas = grupo.competencias_fechas || {};
+  const fechaValidaParaTema = (tema, fechaComparar) => {
+    const desde = competenciasFechas[tema];
+    if (!desde || !fechaComparar) return true;
+    return new Date(fechaComparar).getTime() >= new Date(desde).getTime();
+  };
+  const partidoCalzaConGrupo = (d, fechaComparar) => {
     if (!hayRestriccion) return true;
     const temaCalza = d.tema && competenciasGrupo.includes(d.tema)
-      && (modoCompetencias[d.tema] !== 'tier_a' || esPartidoDestacado(d));
+      && (modoCompetencias[d.tema] !== 'tier_a' || esPartidoDestacado(d))
+      && fechaValidaParaTema(d.tema, fechaComparar);
     const equipoCalza = equiposSeguidosNorm.length > 0 && (
       equiposSeguidosNorm.includes(normEquipo(d.equipo_local)) ||
       equiposSeguidosNorm.includes(normEquipo(d.equipo_visitante))
@@ -270,7 +284,7 @@ async function rutaGanadorSemanal(req, res) {
 
   const { data: grupos, error: errGrupos } = await supabase
     .from('salas_privadas_mvp')
-    .select('id, nombre, admin_id, competencias, equipos_seguidos, modo_competencias');
+    .select('id, nombre, admin_id, competencias, equipos_seguidos, modo_competencias, competencias_fechas');
   if (errGrupos) {
     return res.status(500).json({ error: errGrupos.message });
   }
@@ -280,7 +294,7 @@ async function rutaGanadorSemanal(req, res) {
   for (const grupo of grupos || []) {
     try {
       const { partidoCalzaConGrupo } = await construirCalzaConGrupo(grupo);
-      const partidosGrupoSemanaEntrante = partidosSemanaEntranteReales.filter((d) => partidoCalzaConGrupo(d));
+      const partidosGrupoSemanaEntrante = partidosSemanaEntranteReales.filter((d) => partidoCalzaConGrupo(d, d.fecha_expiracion));
 
       // Ya calculado antes para este grupo+semana — no lo repite. Si viene
       // ?reenviar=1, en vez de saltarlo reenvía el mail de recap con el
@@ -360,7 +374,7 @@ async function rutaGanadorSemanal(req, res) {
       (historial || []).forEach((h) => {
         if (h.desafio_id) {
           const d = desafioPorId[h.desafio_id];
-          if (d && !partidoCalzaConGrupo(d)) return;
+          if (d && !partidoCalzaConGrupo(d, h.fecha_creacion)) return;
         }
         sumaPorUsuario[h.usuario_id] = (sumaPorUsuario[h.usuario_id] || 0) + (h.monto || 0);
       });

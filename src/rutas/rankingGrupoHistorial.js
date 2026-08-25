@@ -31,7 +31,7 @@ async function rutaRankingGrupoHistorial(req, res) {
 
   const { data: sala, error: errSala } = await supabase
     .from('salas_privadas_mvp')
-    .select('id, admin_id, juego_activo, fecha_inicio_conteo, fecha_fin_conteo, competencias, equipos_seguidos, modo_competencias')
+    .select('id, admin_id, juego_activo, fecha_inicio_conteo, fecha_fin_conteo, competencias, equipos_seguidos, modo_competencias, competencias_fechas')
     .eq('id', salaId)
     .single();
   if (errSala || !sala) {
@@ -101,9 +101,19 @@ async function rutaRankingGrupoHistorial(req, res) {
     const coincideFase = fase && listaTierA.some((t) => fase.includes(t.toLowerCase()));
     return coincideEquipo || coincideFase;
   };
-  const temaCalzaConGrupo = (d) => {
+  // "No retroactivo" (a pedido: "si yo edito las competencias es para
+  // adelante en el tiempo, no retroactivo" — mismo fix que rankingGrupo.js/
+  // ganadorSemanal.js, ver el comentario grande ahí).
+  const competenciasFechas = sala.competencias_fechas || {};
+  const fechaValidaParaTema = (tema, fechaComparar) => {
+    const fechaAlta = competenciasFechas[tema];
+    if (!fechaAlta || !fechaComparar) return true;
+    return new Date(fechaComparar).getTime() >= new Date(fechaAlta).getTime();
+  };
+  const temaCalzaConGrupo = (d, fechaComparar) => {
     if (!d?.tema || !competenciasGrupo.includes(d.tema)) return false;
     if (modoCompetencias[d.tema] === 'tier_a' && !esPartidoDestacado(d)) return false;
+    if (!fechaValidaParaTema(d.tema, fechaComparar)) return false;
     return true;
   };
 
@@ -160,7 +170,7 @@ async function rutaRankingGrupoHistorial(req, res) {
     if (!desafio.fecha_expiracion || desafio.fecha_expiracion < desde || desafio.fecha_expiracion > hasta) return;
 
     if (hayRestriccion) {
-      const temaCalza = temaCalzaConGrupo(desafio);
+      const temaCalza = temaCalzaConGrupo(desafio, desafio.fecha_expiracion);
       const equipoCalza = equiposSeguidosNorm.length > 0 && (
         equiposSeguidosNorm.includes(normEquipo(desafio.equipo_local)) ||
         equiposSeguidosNorm.includes(normEquipo(desafio.equipo_visitante))

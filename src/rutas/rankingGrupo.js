@@ -86,7 +86,7 @@ async function calcularTablaGrupo(salaId, { periodo = null, semana = null } = {}
 
   const { data: sala, error: errSala } = await supabase
     .from('salas_privadas_mvp')
-    .select('id, nombre, admin_id, juego_activo, fecha_inicio_conteo, fecha_fin_conteo, competencias, equipos_seguidos, modo_competencias')
+    .select('id, nombre, admin_id, juego_activo, fecha_inicio_conteo, fecha_fin_conteo, competencias, equipos_seguidos, modo_competencias, competencias_fechas')
     .eq('id', salaId)
     .single();
   if (errSala || !sala) {
@@ -267,11 +267,30 @@ async function calcularTablaGrupo(salaId, { periodo = null, semana = null } = {}
     const coincideFase = fase && listaTierA.some((t) => fase.includes(t.toLowerCase()));
     return coincideEquipo || coincideFase;
   };
+  // "No retroactivo" (a pedido: "si yo edito las competencias es para
+  // adelante en el tiempo, no retroactivo" — bug reportado con datos
+  // reales: agregar LaLiga a un grupo DESPUÉS de cerrada la semana 35 hizo
+  // que diamantes de LaLiga ganados ANTES de agregarla contaran igual para
+  // esa semana ya cerrada, inflando PJ/diamantes). competencias_fechas
+  // (columna nueva) guarda, por competencia, desde cuándo cuenta para ESTE
+  // grupo — se llena solo cuando el admin AGREGA una competencia nueva
+  // (ver guardarAdmin en MisGrupos.jsx). Sin fecha registrada para una
+  // competencia (las que el grupo ya tenía desde el principio), cuenta sin
+  // tope — comportamiento de siempre.
+  const competenciasFechas = sala.competencias_fechas || {};
+  const fechaValidaParaTema = (tema, fechaComparar) => {
+    const desde = competenciasFechas[tema];
+    if (!desde || !fechaComparar) return true;
+    return new Date(fechaComparar).getTime() >= new Date(desde).getTime();
+  };
   // Un partido "calza por competencia" si el tema está en la lista del
-  // grupo Y, si esa competencia está en modo tier_a, además es destacado.
-  const temaCalzaConGrupo = (d) => {
+  // grupo Y, si esa competencia está en modo tier_a, además es destacado Y
+  // (si tiene fecha de alta registrada) el partido/diamante es de cuando
+  // esa competencia ya era parte del grupo.
+  const temaCalzaConGrupo = (d, fechaComparar) => {
     if (!d?.tema || !competenciasGrupo.includes(d.tema)) return false;
     if (modoCompetencias[d.tema] === 'tier_a' && !esPartidoDestacado(d)) return false;
+    if (!fechaValidaParaTema(d.tema, fechaComparar)) return false;
     return true;
   };
 
@@ -286,7 +305,7 @@ async function calcularTablaGrupo(salaId, { periodo = null, semana = null } = {}
       // (mejor sumar de más un caso raro que restarle diamantes reales a un
       // jugador por un dato faltante).
       if (d) {
-        const temaCalza = temaCalzaConGrupo(d);
+        const temaCalza = temaCalzaConGrupo(d, h.fecha_creacion);
         const equipoCalza = equiposSeguidosNorm.length > 0 && (
           equiposSeguidosNorm.includes(normEquipo(d.equipo_local)) ||
           equiposSeguidosNorm.includes(normEquipo(d.equipo_visitante))
@@ -347,7 +366,7 @@ async function calcularTablaGrupo(salaId, { periodo = null, semana = null } = {}
     if (!desde || !desafio.fecha_expiracion || desafio.fecha_expiracion < desde || desafio.fecha_expiracion > finVentana) return;
 
     if (hayRestriccion) {
-      const temaCalza = temaCalzaConGrupo(desafio);
+      const temaCalza = temaCalzaConGrupo(desafio, desafio.fecha_expiracion);
       const equipoCalza = equiposSeguidosNorm.length > 0 && (
         equiposSeguidosNorm.includes(normEquipo(desafio.equipo_local)) ||
         equiposSeguidosNorm.includes(normEquipo(desafio.equipo_visitante))
