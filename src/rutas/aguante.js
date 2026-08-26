@@ -56,6 +56,40 @@ const rangoDeSemana = (n) => {
   return { inicio, fin: inicio + MS_SEMANA };
 };
 
+// Partidos de la "fecha" (ronda) VIGENTE de una competencia, dentro de la
+// ventana de la semana en juego (a pedido, bug reportado: filtrar solo por
+// rango de fechas dejaba colarse partidos REPROGRAMADOS de una fecha
+// anterior que por casualidad caían en la misma semana — ej. un equipo
+// terminaba "jugando dos veces" esa semana, una por su partido real de la
+// fecha 21 y otra por un partido pendiente reprogramado de la fecha 15).
+// Se identifica la ronda vigente como la que tiene MÁS partidos esa semana
+// (`subtema` guarda el nombre de ronda que trae API-Football, ej. "Regular
+// Season - 21") — un partido reprogramado suelto es un outlier de a uno
+// contra el resto de una ronda completa, así que el conteo lo descarta solo.
+async function partidosDeLaRondaVigente(competencia, inicio, fin) {
+  const { data } = await supabase
+    .from('desafios_mvp')
+    .select('id, equipo_local, equipo_visitante, fecha_expiracion, subtema, goles_local_oficial, goles_visitante_oficial, resultado_oficial')
+    .eq('tema', competencia)
+    .in('categoria', [4, 5])
+    .eq('esta_activo', true)
+    .gte('fecha_expiracion', new Date(inicio).toISOString())
+    .lt('fecha_expiracion', new Date(fin).toISOString())
+    .order('fecha_expiracion', { ascending: true });
+  const partidos = data || [];
+  const conteoPorRonda = {};
+  partidos.forEach((p) => {
+    const ronda = p.subtema || '';
+    conteoPorRonda[ronda] = (conteoPorRonda[ronda] || 0) + 1;
+  });
+  let rondaVigente = null;
+  let maxConteo = 0;
+  Object.entries(conteoPorRonda).forEach(([ronda, conteo]) => {
+    if (conteo > maxConteo) { maxConteo = conteo; rondaVigente = ronda; }
+  });
+  return rondaVigente == null ? partidos : partidos.filter((p) => (p.subtema || '') === rondaVigente);
+}
+
 // ============================================================
 // GET /aguante-estado?sala_id=...&usuario_id=...
 // ============================================================
@@ -121,21 +155,12 @@ async function rutaAguanteEstado(req, res) {
     const semanaActual = numeroSemanaDe(Date.now());
     const { inicio, fin } = rangoDeSemana(semanaActual);
 
-    // Partidos REALES de esta semana para la competencia del grupo (a
+    // Partidos REALES de la fecha vigente para la competencia del grupo (a
     // pedido: el jugador tiene que ver contra quién juega cada equipo antes
-    // de elegir, no una lista suelta de nombres) — mismo criterio de
-    // esta_activo que el resto de la app usa para no mostrar duplicados
-    // huérfanos.
-    const { data: partidosSemanaData } = await supabase
-      .from('desafios_mvp')
-      .select('id, equipo_local, equipo_visitante, fecha_expiracion, goles_local_oficial, goles_visitante_oficial')
-      .eq('tema', sala.aguante_competencia)
-      .in('categoria', [4, 5])
-      .eq('esta_activo', true)
-      .gte('fecha_expiracion', new Date(inicio).toISOString())
-      .lt('fecha_expiracion', new Date(fin).toISOString())
-      .order('fecha_expiracion', { ascending: true });
-    const partidosSemana = (partidosSemanaData || []).map((d) => ({
+    // de elegir, no una lista suelta de nombres — y solo los de la ronda
+    // que corresponde, no partidos reprogramados de otra fecha).
+    const partidosSemanaData = await partidosDeLaRondaVigente(sala.aguante_competencia, inicio, fin);
+    const partidosSemana = partidosSemanaData.map((d) => ({
       id: d.id,
       equipoLocal: d.equipo_local,
       equipoVisitante: d.equipo_visitante,
@@ -261,19 +286,11 @@ async function rutaAguanteElegir(req, res) {
 
     // Plazo: no se puede elegir (ni cambiar la elección) una vez que
     // arrancó el partido de ESE equipo en esta ventana — mismo criterio
-    // que el resto de la app usa para cerrar pronósticos.
-    const { data: partidoDeEseEquipo } = await supabase
-      .from('desafios_mvp')
-      .select('id, fecha_expiracion')
-      .eq('tema', sala.aguante_competencia)
-      .in('categoria', [4, 5])
-      .eq('esta_activo', true)
-      .gte('fecha_expiracion', new Date(inicio).toISOString())
-      .lt('fecha_expiracion', new Date(fin).toISOString())
-      .or(`equipo_local.eq.${equipo},equipo_visitante.eq.${equipo}`)
-      .order('fecha_expiracion', { ascending: true })
-      .limit(1)
-      .maybeSingle();
+    // que el resto de la app usa para cerrar pronósticos. Se busca solo
+    // dentro de los partidos de la RONDA VIGENTE (no cualquier partido
+    // reprogramado que caiga en la misma semana).
+    const partidosRonda = await partidosDeLaRondaVigente(sala.aguante_competencia, inicio, fin);
+    const partidoDeEseEquipo = partidosRonda.find((p) => p.equipo_local === equipo || p.equipo_visitante === equipo) || null;
     // El equipo tiene que jugar ESTA semana — no tendría sentido "elegir" un
     // equipo que no tiene partido en la ventana en juego.
     if (!partidoDeEseEquipo) {
@@ -324,15 +341,10 @@ async function rutaAguanteResolver(req, res) {
     for (const grupo of grupos || []) {
       if (!grupo.aguante_competencia) continue;
 
-      // Todos los partidos YA resueltos de esa competencia esta semana —
-      // se trae una vez por grupo y se busca adentro por equipo.
-      const { data: partidosSemana } = await supabase
-        .from('desafios_mvp')
-        .select('equipo_local, equipo_visitante, goles_local_oficial, goles_visitante_oficial, resultado_oficial')
-        .eq('tema', grupo.aguante_competencia)
-        .in('categoria', [4, 5])
-        .gte('fecha_expiracion', new Date(inicio).toISOString())
-        .lt('fecha_expiracion', new Date(fin).toISOString());
+      // Todos los partidos de la RONDA VIGENTE de esa competencia esta
+      // semana (no cualquier partido reprogramado que caiga en la misma
+      // ventana) — se trae una vez por grupo y se busca adentro por equipo.
+      const partidosSemana = await partidosDeLaRondaVigente(grupo.aguante_competencia, inicio, fin);
 
       const resultadoDeEquipo = (equipo) => {
         const partido = (partidosSemana || []).find(
