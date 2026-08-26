@@ -119,6 +119,31 @@ async function rutaAguanteEstado(req, res) {
     if (errElec) return res.status(500).json({ error: errElec.message });
 
     const semanaActual = numeroSemanaDe(Date.now());
+    const { inicio, fin } = rangoDeSemana(semanaActual);
+
+    // Partidos REALES de esta semana para la competencia del grupo (a
+    // pedido: el jugador tiene que ver contra quién juega cada equipo antes
+    // de elegir, no una lista suelta de nombres) — mismo criterio de
+    // esta_activo que el resto de la app usa para no mostrar duplicados
+    // huérfanos.
+    const { data: partidosSemanaData } = await supabase
+      .from('desafios_mvp')
+      .select('id, equipo_local, equipo_visitante, fecha_expiracion, goles_local_oficial, goles_visitante_oficial')
+      .eq('tema', sala.aguante_competencia)
+      .in('categoria', [4, 5])
+      .eq('esta_activo', true)
+      .gte('fecha_expiracion', new Date(inicio).toISOString())
+      .lt('fecha_expiracion', new Date(fin).toISOString())
+      .order('fecha_expiracion', { ascending: true });
+    const partidosSemana = (partidosSemanaData || []).map((d) => ({
+      id: d.id,
+      equipoLocal: d.equipo_local,
+      equipoVisitante: d.equipo_visitante,
+      fechaExpiracion: d.fecha_expiracion,
+      empezado: d.fecha_expiracion ? new Date(d.fecha_expiracion).getTime() <= Date.now() : false,
+      resuelto: d.goles_local_oficial != null && d.goles_visitante_oficial != null,
+    }));
+
     // La semana "en juego" para elegir es la actual — la anterior ya cerró
     // y se resuelve con /aguante-resolver.
     const equiposUsadosPorUsuario = {};
@@ -148,6 +173,7 @@ async function rutaAguanteEstado(req, res) {
       modoJuego: sala.modo_juego,
       competencia: sala.aguante_competencia,
       numeroSemana: semanaActual,
+      partidosSemana,
       jugadores,
       juegoTerminado,
       ganadores: juegoTerminado ? vivos.map((j) => j.usuarioId) : [],
@@ -241,13 +267,19 @@ async function rutaAguanteElegir(req, res) {
       .select('id, fecha_expiracion')
       .eq('tema', sala.aguante_competencia)
       .in('categoria', [4, 5])
+      .eq('esta_activo', true)
       .gte('fecha_expiracion', new Date(inicio).toISOString())
       .lt('fecha_expiracion', new Date(fin).toISOString())
       .or(`equipo_local.eq.${equipo},equipo_visitante.eq.${equipo}`)
       .order('fecha_expiracion', { ascending: true })
       .limit(1)
       .maybeSingle();
-    if (partidoDeEseEquipo && new Date(partidoDeEseEquipo.fecha_expiracion).getTime() <= Date.now()) {
+    // El equipo tiene que jugar ESTA semana — no tendría sentido "elegir" un
+    // equipo que no tiene partido en la ventana en juego.
+    if (!partidoDeEseEquipo) {
+      return res.status(400).json({ error: `${equipo} no tiene partido esta semana en ${sala.aguante_competencia}.` });
+    }
+    if (new Date(partidoDeEseEquipo.fecha_expiracion).getTime() <= Date.now()) {
       return res.status(400).json({ error: `El partido de ${equipo} esta semana ya empezó — no se puede elegir.` });
     }
 
