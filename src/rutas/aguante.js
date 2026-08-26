@@ -258,7 +258,7 @@ async function rutaAguanteElegir(req, res) {
       if (errNuevo) return res.status(500).json({ error: errNuevo.message });
       participante = nuevo;
     }
-    if (participante.eliminado) return res.status(400).json({ error: 'Ya quedaste eliminado — no podés seguir eligiendo.' });
+    if (participante.eliminado) return res.status(400).json({ error: 'Ya quedaste eliminado — no puedes seguir eligiendo.' });
 
     // El equipo tiene que ser de VERDAD un equipo de la competencia del
     // grupo (mismos nombres que trae /equipos, para poder cruzar después
