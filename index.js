@@ -30,6 +30,7 @@ const { rutaGanadorSemanal } = require('./src/rutas/ganadorSemanal');
 const { rutaRankingGrupo } = require('./src/rutas/rankingGrupo');
 const { rutaRankingGrupoHistorial } = require('./src/rutas/rankingGrupoHistorial');
 const { rutaRefrescarPlanteles } = require('./src/rutas/refrescarPlanteles');
+const { rutaAguanteEstado, rutaAguanteElegir, rutaAguanteResolver } = require('./src/rutas/aguante');
 const {
   rutaNotificarRegistro,
   rutaNotificarInvitadoGrupo,
@@ -259,6 +260,23 @@ app.options('/notificar-grupo-creado', permitirCorsInvitar, (req, res) => res.se
 app.post('/notificar-grupo-creado', permitirCorsInvitar, rutaNotificarGrupoCreado);
 app.options('/notificar-grupo-activado', permitirCorsInvitar, (req, res) => res.sendStatus(204));
 app.post('/notificar-grupo-activado', permitirCorsInvitar, rutaNotificarGrupoActivado);
+
+// "El Aguante" (a pedido): modo de juego alternativo a la Polla — ver
+// src/rutas/aguante.js para el detalle completo de las 3 rutas.
+// /aguante-estado: solo lectura, la llama directo el navegador del jugador.
+app.get('/aguante-estado', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  next();
+}, rutaAguanteEstado);
+// /aguante-elegir: mismo criterio que /invitar-a-grupo — sin secreto (la
+// autorización real pasa dentro de la ruta), pero necesita el preflight de
+// CORS porque es POST con body JSON.
+app.options('/aguante-elegir', permitirCorsInvitar, (req, res) => res.sendStatus(204));
+app.post('/aguante-elegir', permitirCorsInvitar, rutaAguanteElegir);
+// /aguante-resolver: cron semanal (mismo horario que /ganador-semanal),
+// escribe en la base, así que lleva X-Cron-Secret.
+app.get('/aguante-resolver', exigirSecreto, rutaAguanteResolver);
+app.post('/aguante-resolver', exigirSecreto, rutaAguanteResolver);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
