@@ -1190,6 +1190,36 @@ function hayErrorApiFootball(errores) {
 }
 
 // ============================================================
+// LIMITADOR DE RITMO GLOBAL (a nivel de TODO el proceso)
+// ============================================================
+// BUG REAL (confirmado en logs de Render, "llevamos semanas con los 955
+// pendientes que no bajan"): el limitador de ritmo vivía SOLO adentro de
+// /refrescar-planteles — pero la misma API key la comparten TODOS los
+// consumidores del proceso, y /jugadores-perfil (el endpoint que usa la app
+// cada vez que un jugador abre la pestaña Alineaciones) dispara hasta 40
+// pedidos EN PARALELO con Promise.all, sin ningún límite. En los logs se ve
+// exactamente eso: decenas de "límite de pedidos por minuto alcanzado" con
+// stack trace en equiposIds.js (rutaPerfilesJugadores), al mismo tiempo que
+// corría la corrida de planteles. Esa ráfaga revienta la ventana de 1 minuto
+// y arrastra a TODOS los pedidos restantes de esa ventana — incluidos los de
+// la resolución de nombres, que por eso nunca avanzaba aunque su propio
+// limitador local estuviera perfecto.
+//
+// Este limitador es GLOBAL: una sola cola compartida para los endpoints
+// "pesados" (perfiles de jugador y planteles), venga el pedido del cron, de
+// la app o de donde sea — el total combinado nunca supera el tope. Los
+// endpoints de tiempo real (/vivo, marcadores) NO pasan por acá a propósito:
+// son pocos pedidos y no pueden esperar en una cola larga.
+const MAX_REQUESTS_POR_MINUTO_GLOBAL = Number(process.env.MAX_REQUESTS_POR_MINUTO_GLOBAL) || 100;
+const INTERVALO_GLOBAL_MS = Math.max(50, Math.ceil(60000 / MAX_REQUESTS_POR_MINUTO_GLOBAL));
+let colaGlobalApi = Promise.resolve();
+function turnoGlobalApi() {
+  const turno = colaGlobalApi.then(() => new Promise((r) => setTimeout(r, INTERVALO_GLOBAL_MS)));
+  colaGlobalApi = turno.catch(() => {});
+  return turno;
+}
+
+// ============================================================
 // PERFIL BÁSICO DE JUGADOR (solo edad + nacionalidad, en lote)
 // ============================================================
 // Para los filtros de "nacionalidad" y "edad" sobre la cancha (a pedido):
@@ -1208,6 +1238,11 @@ async function obtenerPerfilBasicoJugador(playerId) {
   const enCache = cachePerfilesJugador.get(clave);
   if (enCache && enCache.expira > Date.now()) return enCache.datos;
 
+  // Turno en la cola GLOBAL (ver arriba): así los 40 pedidos en paralelo de
+  // /jugadores-perfil salen espaciados en vez de en ráfaga, y no le queman
+  // la ventana de 1 minuto al resto del proceso. El caché de arriba corre
+  // ANTES del turno a propósito — un hit de caché no gasta ni turno ni cuota.
+  await turnoGlobalApi();
   const resp = await fetch(`${BASE}/players/profiles?player=${playerId}`, { headers });
   const data = await resp.json();
   const p = data?.response?.[0]?.player;
@@ -1440,8 +1475,12 @@ async function obtenerPlantelClub(teamId) {
   // "how-ratelimit-works" en su doc. Antes acá se pedían squad + entrenador
   // EN PARALELO con Promise.all, lo que generaba justamente ese patrón de
   // ráfaga en cada equipo procesado. Ahora van uno después del otro).
+  // Turnos en la cola GLOBAL (ver turnoGlobalApi arriba): estos dos pedidos
+  // comparten cuota con /jugadores-perfil y el resto del proceso.
+  await turnoGlobalApi();
   const respSquad = await fetch(`${BASE}/players/squads?team=${teamId}`, { headers });
   const dataSquad = await respSquad.json();
+  await turnoGlobalApi();
   const respCoach = await fetch(`${BASE}/coachs?team=${teamId}`, { headers });
   const dataCoach = await respCoach.json();
 

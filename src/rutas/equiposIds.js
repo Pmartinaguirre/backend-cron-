@@ -3,7 +3,7 @@
 // GET /forma?ids=1-2-3    — últimos 5 resultados de varios equipos de una vez.
 //                         Solo lectura, la llama el navegador.
 const { supabase } = require('../supabaseClient');
-const { obtenerFichaClub, obtenerPerfilBasicoJugador } = require('../apiFootball');
+const { obtenerFichaClub, obtenerPerfilBasicoJugador, nombreCortoDesdeFirstLast } = require('../apiFootball');
 
 const API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY;
 const BASE = 'https://v3.football.api-sports.io';
@@ -165,17 +165,53 @@ async function rutaPerfilesJugadores(req, res) {
   if (ids.length === 0) return res.status(400).json({ error: 'Ningún id válido en "ids".' });
 
   const perfiles = {};
+  // APROVECHAR EL VIAJE (a pedido, backlog de 955 nombres pendientes que no
+  // baja): cada perfil que este endpoint trae de la API incluye firstname/
+  // lastname — exactamente el dato que /refrescar-planteles necesita para
+  // resolver nombre_corto. Antes se tiraba a la basura; ahora se junta y se
+  // guarda en jugadores_perfil al final (upsert parcial: solo jugador_id +
+  // nombre_corto, mismo criterio que refrescarPlanteles.js para no pisar
+  // nombre/foto). Cada vez que alguien abre una alineación en la app, hasta
+  // 40 pendientes se resuelven gratis, sin gastar cuota extra (el pedido a
+  // la API ya se hacía igual).
+  const filasNombre = [];
   await Promise.all(ids.map(async (id) => {
     try {
       const p = await obtenerPerfilBasicoJugador(id);
       perfiles[id] = p ? { edad: p.edad, nacionalidad: p.nacionalidad } : null;
+      const nombreCorto = p ? nombreCortoDesdeFirstLast(p.firstname, p.lastname) : null;
+      if (nombreCorto) filasNombre.push({ jugador_id: id, nombre_corto: nombreCorto, actualizado_en: new Date().toISOString() });
     } catch (e) {
       console.error(`[/jugadores-perfil] Error con el jugador ${id}:`, e);
       perfiles[id] = null;
     }
   }));
 
+  // Responder primero, guardar después: el navegador no tiene por qué
+  // esperar al upsert. OJO: solo se actualizan filas que YA existen con
+  // nombre_corto null — un upsert ciego crearía filas huérfanas para
+  // jugadores que no son de nuestros planteles controlables.
   res.json({ perfiles });
+
+  if (filasNombre.length > 0) {
+    try {
+      const idsConNombre = filasNombre.map((f) => f.jugador_id);
+      const { data: existentes } = await supabase
+        .from('jugadores_perfil')
+        .select('jugador_id')
+        .in('jugador_id', idsConNombre)
+        .is('nombre_corto', null);
+      const idsPendientes = new Set((existentes || []).map((r) => r.jugador_id));
+      const filasAGuardar = filasNombre.filter((f) => idsPendientes.has(f.jugador_id));
+      if (filasAGuardar.length > 0) {
+        const { error: errUp } = await supabase.from('jugadores_perfil').upsert(filasAGuardar);
+        if (errUp) throw errUp;
+        console.log(`[/jugadores-perfil] De paso se resolvieron ${filasAGuardar.length} nombres pendientes en jugadores_perfil.`);
+      }
+    } catch (e) {
+      console.error('[/jugadores-perfil] Error guardando nombres de paso (no afecta la respuesta):', e);
+    }
+  }
 }
 
 module.exports = { rutaBackfillEquipos, rutaForma, rutaPerfilesJugadores };
