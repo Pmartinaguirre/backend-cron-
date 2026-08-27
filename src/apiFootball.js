@@ -584,19 +584,22 @@ async function obtenerHeadToHead(idLocal, idVisita, limite = 5) {
 // ("Injury"/"Suspended" + un texto libre en "player.reason", ej. "Knee
 // Injury", "Red Card"). No hace falta pedir por equipo por separado: el
 // filtro por fixture ya trae a los dos equipos juntos.
-// BUG recurrente (a pedido, ej. Barcelona vs Athletic Club): API-Football
-// devuelve cada jugador DOS VECES en /injuries (mismo id, mismo motivo) —
-// no es un bug nuestro de fetch duplicado (un solo fetch, un solo .map acá
-// abajo), es la API la que ya manda el arreglo repetido. Mismo tipo de
-// problema que tuvimos con los cruces de llave Cat4/Cat5 (dedupe antes de
-// armar cruces). Se deduplica acá, en la fuente, con un Map por
-// jugadorId+equipoId (o jugador+equipo si la API no manda id), quedándose
-// con la PRIMERA aparición — así ningún consumidor de obtenerLesionados
-// (ni futuros) tiene que acordarse de deduplicar por su cuenta.
 async function obtenerLesionados(fixtureId) {
   if (!fixtureId) return [];
   const resp = await fetch(`${BASE}/injuries?fixture=${fixtureId}`, { headers });
   const data = await resp.json();
+  // DEBUG (a pedido, bug reportado: "sale vacío" después de arreglar el
+  // duplicado): mismo problema que ya tuvimos en obtenerDatosVenuePorNombre
+  // — API-Football puede responder status 200 con response=[] pero un
+  // objeto "errors" adentro (cuota del plan agotada, parámetro rechazado,
+  // etc.), y sin este log esos casos son indistinguibles de "este partido
+  // realmente no tiene lesionados/suspendidos".
+  const errores = data?.errors;
+  const hayError = errores && (Array.isArray(errores) ? errores.length > 0 : Object.keys(errores).length > 0);
+  if (!resp.ok || hayError) {
+    console.error(`[obtenerLesionados] fixture ${fixtureId}: la API devolvió un error — status ${resp.status}, errors:`, errores);
+    return [];
+  }
   const crudos = (data?.response || []).map((r) => ({
     jugadorId: r.player?.id ?? null,
     jugador: r.player?.name || '',
@@ -605,12 +608,23 @@ async function obtenerLesionados(fixtureId) {
     equipoId: r.team?.id ?? null,
     equipo: r.team?.name || null,
   }));
+  // BUG recurrente (a pedido, ej. Barcelona vs Athletic Club): API-Football
+  // devuelve cada jugador DOS VECES en /injuries (mismo id, mismo motivo) —
+  // no es un bug nuestro de fetch duplicado (un solo fetch, un solo .map acá
+  // arriba), es la API la que ya manda el arreglo repetido. Mismo tipo de
+  // problema que tuvimos con los cruces de llave Cat4/Cat5 (dedupe antes de
+  // armar cruces). Se deduplica acá, en la fuente, con un Map por
+  // jugadorId+equipoId (o jugador+equipo si la API no manda id), quedándose
+  // con la PRIMERA aparición — así ningún consumidor de obtenerLesionados
+  // (ni futuros) tiene que acordarse de deduplicar por su cuenta.
   const porClave = new Map();
   for (const j of crudos) {
     const clave = j.jugadorId != null ? `id:${j.jugadorId}:${j.equipoId}` : `nombre:${j.jugador}:${j.equipo}`;
     if (!porClave.has(clave)) porClave.set(clave, j);
   }
-  return Array.from(porClave.values());
+  const resultado = Array.from(porClave.values());
+  console.log(`[obtenerLesionados] fixture ${fixtureId}: API trajo ${crudos.length} registro(s) crudo(s) -> ${resultado.length} después de deduplicar.`);
+  return resultado;
 }
 
 // ---------- Equipos de una liga (usado por /equipos, para el selector Tier A
