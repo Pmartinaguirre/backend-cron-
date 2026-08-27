@@ -137,6 +137,12 @@ async function conReintentoRateLimit(fn, esperaMs = 10000) {
   try {
     return await fn();
   } catch (e) {
+    // Cuota DIARIA/del plan agotada (ver apiFootball.js) — a diferencia del
+    // límite por minuto, reintentar ahora no sirve de nada (va a fallar
+    // exactamente igual): no hay que esperar 10s ni consumir otro pedido,
+    // solo dejar que suba el error tal cual para que ejecutarRefresco()
+    // aborte la corrida entera en vez de seguir insistiendo item por item.
+    if (e.esCuotaAgotada) throw e;
     if (e.esRateLimit) {
       console.warn(`[/refrescar-planteles] Rate limit — esperando ${esperaMs}ms antes de reintentar...`);
       await pausa(esperaMs);
@@ -205,6 +211,18 @@ async function equiposControlables() {
 // rutaRefrescarPlanteles (ver nota FIRE-AND-FORGET arriba del archivo), así
 // que ninguna de sus promesas pendientes bloquea la respuesta HTTP.
 async function ejecutarRefresco() {
+  // Bandera de "cuota diaria agotada" (a pedido, bug real: cientos de
+  // pendientes se quedaban en 0 resueltos corrida tras corrida sin que se
+  // entendiera por qué — resultó ser la cuota DIARIA de API-Football
+  // agotada, no el límite por minuto, así que cada pedido nuevo fallaba
+  // exactamente igual y la corrida seguía insistiendo uno por uno durante
+  // minutos sin ningún avance real). Una vez que CUALQUIER pedido confirma
+  // que la cuota diaria está en 0, esto corta el resto de la corrida de
+  // inmediato — ni sigue con más equipos ni con más jugadores — en vez de
+  // seguir mandando pedidos que van a fallar todos igual hasta que se acabe
+  // la lista.
+  let cuotaAgotada = false;
+
   const resultado = {
     equiposControlables: 0,
     equiposRevisados: 0,
@@ -212,6 +230,7 @@ async function ejecutarRefresco() {
     entrenadoresGuardados: 0,
     nombresYaResueltos: 0,
     nombresNuevosResueltos: 0,
+    cuotaDiariaAgotada: false,
     errores: [],
   };
 
@@ -223,6 +242,7 @@ async function ejecutarRefresco() {
     const jugadoresVistos = new Map(); // id -> {id, nombre, foto} (deduplicado entre equipos)
 
     await pMap(lote, CONCURRENCIA_EQUIPOS, async (equipo) => {
+      if (cuotaAgotada) return; // ver bandera arriba — corta el resto del lote
       try {
         const plantel = await conReintentoRateLimit(async () => {
           // obtenerPlantelClub hace 2 pedidos internos (squad + coach) en
@@ -296,6 +316,12 @@ async function ejecutarRefresco() {
 
         resultado.equiposRevisados++;
       } catch (e) {
+        if (e.esCuotaAgotada) {
+          cuotaAgotada = true;
+          resultado.cuotaDiariaAgotada = true;
+          console.error(`[/refrescar-planteles] Cuota diaria de API-Football agotada — cortando la corrida (equipo ${equipo.id}).`);
+          return;
+        }
         console.error(`[/refrescar-planteles] Error con el equipo ${equipo.id}:`, e);
         resultado.errores.push({ equipoId: equipo.id, error: e.message });
       }
@@ -379,6 +405,7 @@ async function ejecutarRefresco() {
     let sinPerfilONombre = 0;
     const muestraSinResolver = [];
     await pMap(pendientes, CONCURRENCIA_PERFILES, async (id) => {
+      if (cuotaAgotada) return; // ver bandera arriba — corta el resto del lote
       try {
         const perfil = await conReintentoRateLimit(async () => {
           await limitarRitmo();
@@ -392,6 +419,12 @@ async function ejecutarRefresco() {
           if (muestraSinResolver.length < 10) muestraSinResolver.push(id);
         }
       } catch (e) {
+        if (e.esCuotaAgotada) {
+          cuotaAgotada = true;
+          resultado.cuotaDiariaAgotada = true;
+          console.error(`[/refrescar-planteles] Cuota diaria de API-Football agotada — cortando la corrida (jugador ${id}).`);
+          return;
+        }
         console.error(`[/refrescar-planteles] Error resolviendo nombre del jugador ${id}:`, e);
         resultado.errores.push({ jugadorId: id, error: e.message });
       }
@@ -409,6 +442,12 @@ async function ejecutarRefresco() {
     resultado.nombresNuevosResueltos = filasResueltas.length;
     resultado.jugadoresPendientesDeNombre = Math.max(0, resultado.nombresPendientesGlobalAntes - filasResueltas.length);
 
+    if (resultado.cuotaDiariaAgotada) {
+      console.log(
+        `[/refrescar-planteles] CORTADA POR CUOTA DIARIA AGOTADA — no reintentar más hoy, va a fallar igual. ` +
+        `Esperá al reseteo de cuota de API-Football (o subí de plan) y volvé a disparar mañana.`
+      );
+    }
     console.log('[/refrescar-planteles] Corrida terminada:', JSON.stringify(resultado));
   } catch (e) {
     console.error('[/refrescar-planteles] Error general:', e, JSON.stringify(resultado));

@@ -1151,6 +1151,24 @@ async function obtenerFichaJugador(playerId) {
   };
 }
 
+// Cuota DIARIA/del plan agotada — a diferencia del límite por MINUTO (que
+// se libera solo, no hace falta más que esperar un rato dentro de la misma
+// corrida), esto NO se resuelve reintentando ahora: hay que esperar a que
+// API-Football resetee la cuota (o subir de plan). Bug real que motivó
+// esto: "/refrescar-planteles" trataba TODO error `errors.requests` como
+// rate-limit-por-minuto (reintenta 1 vez a los 10s) — si en realidad era la
+// cuota diaria agotada, el reintento fallaba igual, y la corrida entera
+// seguía mandando pedidos uno por uno durante minutos, todos fallando
+// idéntico, sin que nadie pudiera distinguir "espera 10s y va a andar" de
+// "no va a andar hoy, no sigas insistiendo". El header
+// x-ratelimit-requests-remaining refleja la cuota REAL del plan (diaria o
+// mensual según el plan contratado) — cuando llega a 0, no es una ventana
+// de 1 minuto, es el total.
+function cuotaDiariaAgotada(resp) {
+  const restante = resp.headers.get('x-ratelimit-requests-remaining');
+  return restante != null && Number(restante) <= 0;
+}
+
 // ============================================================
 // PERFIL BÁSICO DE JUGADOR (solo edad + nacionalidad, en lote)
 // ============================================================
@@ -1194,6 +1212,11 @@ async function obtenerPerfilBasicoJugador(playerId) {
       `cuotaRestante=${restante ?? 'desconocida'}`
     );
     if (esRateLimit) {
+      if (cuotaDiariaAgotada(resp)) {
+        const err = new Error('API-Football: cuota diaria/del plan agotada (no por minuto).');
+        err.esCuotaAgotada = true;
+        throw err;
+      }
       const err = new Error('API-Football: límite de pedidos por minuto alcanzado.');
       err.esRateLimit = true;
       throw err;
@@ -1410,6 +1433,11 @@ async function obtenerPlantelClub(teamId) {
   const erroresSquad = dataSquad?.errors;
   if (erroresSquad && (erroresSquad.rateLimit || erroresSquad.requests)) {
     console.error(`[obtenerPlantelClub] Rate limit pidiendo el plantel del equipo ${teamId}: ${JSON.stringify(erroresSquad)}`);
+    if (cuotaDiariaAgotada(respSquad)) {
+      const errCuota = new Error('API-Football: cuota diaria/del plan agotada (no por minuto).');
+      errCuota.esCuotaAgotada = true;
+      throw errCuota;
+    }
     const err = new Error('API-Football: límite de pedidos por minuto alcanzado.');
     err.esRateLimit = true;
     throw err;
