@@ -584,11 +584,20 @@ async function obtenerHeadToHead(idLocal, idVisita, limite = 5) {
 // ("Injury"/"Suspended" + un texto libre en "player.reason", ej. "Knee
 // Injury", "Red Card"). No hace falta pedir por equipo por separado: el
 // filtro por fixture ya trae a los dos equipos juntos.
+// BUG recurrente (a pedido, ej. Barcelona vs Athletic Club): API-Football
+// devuelve cada jugador DOS VECES en /injuries (mismo id, mismo motivo) —
+// no es un bug nuestro de fetch duplicado (un solo fetch, un solo .map acá
+// abajo), es la API la que ya manda el arreglo repetido. Mismo tipo de
+// problema que tuvimos con los cruces de llave Cat4/Cat5 (dedupe antes de
+// armar cruces). Se deduplica acá, en la fuente, con un Map por
+// jugadorId+equipoId (o jugador+equipo si la API no manda id), quedándose
+// con la PRIMERA aparición — así ningún consumidor de obtenerLesionados
+// (ni futuros) tiene que acordarse de deduplicar por su cuenta.
 async function obtenerLesionados(fixtureId) {
   if (!fixtureId) return [];
   const resp = await fetch(`${BASE}/injuries?fixture=${fixtureId}`, { headers });
   const data = await resp.json();
-  return (data?.response || []).map((r) => ({
+  const crudos = (data?.response || []).map((r) => ({
     jugadorId: r.player?.id ?? null,
     jugador: r.player?.name || '',
     tipo: r.player?.type || null, // "Missing Fixture" | "Questionable" (según la API)
@@ -596,6 +605,12 @@ async function obtenerLesionados(fixtureId) {
     equipoId: r.team?.id ?? null,
     equipo: r.team?.name || null,
   }));
+  const porClave = new Map();
+  for (const j of crudos) {
+    const clave = j.jugadorId != null ? `id:${j.jugadorId}:${j.equipoId}` : `nombre:${j.jugador}:${j.equipo}`;
+    if (!porClave.has(clave)) porClave.set(clave, j);
+  }
+  return Array.from(porClave.values());
 }
 
 // ---------- Equipos de una liga (usado por /equipos, para el selector Tier A
