@@ -397,12 +397,16 @@ async function ejecutarRefresco() {
 
     const { data: filasPendientes, error: errPend } = await supabase
       .from('jugadores_perfil')
-      .select('jugador_id')
+      // `nombre` también (a pedido, fin del backlog eterno): es el fallback
+      // cuando la API no tiene perfil para el jugador — ver más abajo.
+      .select('jugador_id, nombre')
       .is('nombre_corto', null)
       .order('actualizado_en', { ascending: true })
       .limit(MAX_JUGADORES_NUEVOS_POR_CORRIDA);
     if (errPend) throw errPend;
-    const pendientes = (filasPendientes || []).map((p) => p.jugador_id);
+    const pendientes = filasPendientes || [];
+    const nombrePlanoPorId = new Map(pendientes.map((p) => [p.jugador_id, p.nombre || null]));
+    const idsPendientes = pendientes.map((p) => p.jugador_id);
     console.log(
       `[/refrescar-planteles] Seleccionados para resolver esta corrida: ${pendientes.length} ` +
       `(tope configurado MAX_JUGADORES_NUEVOS_POR_CORRIDA=${MAX_JUGADORES_NUEVOS_POR_CORRIDA}, pendientes reales=${resultado.nombresPendientesGlobalAntes})`
@@ -418,8 +422,9 @@ async function ejecutarRefresco() {
     // sin tener que ir a buscar en los logs línea por línea.
     const filasResueltas = [];
     let sinPerfilONombre = 0;
+    let resueltosPorFallback = 0;
     const muestraSinResolver = [];
-    await pMap(pendientes, CONCURRENCIA_PERFILES, async (id) => {
+    await pMap(idsPendientes, CONCURRENCIA_PERFILES, async (id) => {
       if (cuotaAgotada) return; // ver bandera arriba — corta el resto del lote
       try {
         const perfil = await conReintentoRateLimit(async () => {
@@ -430,8 +435,30 @@ async function ejecutarRefresco() {
         if (nombreCorto) {
           filasResueltas.push({ jugador_id: id, nombre_corto: nombreCorto, actualizado_en: new Date().toISOString() });
         } else {
-          sinPerfilONombre++;
-          if (muestraSinResolver.length < 10) muestraSinResolver.push(id);
+          // FALLBACK DEFINITIVO (a pedido, "llevamos una semana, quizás
+          // mejor hacer otra cosa"): la corrida con el rate-limit YA
+          // arreglado (0 errores) demostró que 927 de los 955 pendientes
+          // vienen limpios de la API con results=0 — API-Football
+          // sencillamente NO TIENE perfil (/players/profiles) para esos
+          // jugadores (ligas chicas/sudamericanas que ese endpoint no
+          // cubre). Reintentarlos mañana, pasado y para siempre nunca los
+          // iba a resolver: no hay nada que traer. Pero el nombre del
+          // jugador YA LO TENEMOS — /players/squads lo trajo cuando se
+          // cargó el plantel (formato "F. Zampedri") y está guardado en
+          // jugadores_perfil.nombre. El perfil solo servía para el nombre
+          // "bonito" separado en firstname/lastname; cuando no existe, el
+          // nombre del plantel tal cual es un nombre_corto perfectamente
+          // usable. Guardarlo además SACA al jugador de la lista de
+          // pendientes para siempre — se corta el ciclo de reintentos
+          // eternos y se libera esa cuota para lo que sí sirve.
+          const nombrePlano = String(nombrePlanoPorId.get(id) || '').trim();
+          if (nombrePlano) {
+            filasResueltas.push({ jugador_id: id, nombre_corto: nombrePlano, actualizado_en: new Date().toISOString() });
+            resueltosPorFallback++;
+          } else {
+            sinPerfilONombre++;
+            if (muestraSinResolver.length < 10) muestraSinResolver.push(id);
+          }
         }
       } catch (e) {
         if (e.esCuotaAgotada) {
@@ -446,6 +473,7 @@ async function ejecutarRefresco() {
       await pausa(PAUSA_ENTRE_PERFILES_MS);
     });
     resultado.sinPerfilONombre = sinPerfilONombre;
+    resultado.resueltosPorFallbackNombrePlano = resueltosPorFallback;
     resultado.muestraSinResolver = muestraSinResolver;
     if (filasResueltas.length > 0) {
       // Upsert PARCIAL a propósito (solo jugador_id + nombre_corto): no toca
