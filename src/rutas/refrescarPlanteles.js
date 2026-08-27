@@ -99,7 +99,13 @@ function pausa(ms) {
 // porque no sabemos el límite real del plan — hay margen para subirlo por
 // variable de entorno una vez confirmado cuánto permite de verdad (lo dice
 // el mensaje de error de la API, o el soporte/dashboard de API-Football).
-const MAX_REQUESTS_POR_MINUTO = Number(process.env.MAX_REQUESTS_POR_MINUTO_PLANTELES) || 120;
+// Bajado de 120 a 60/min por default (a pedido, "llevamos días con esto"):
+// con el bug de detección de rate-limit ya arreglado (ver apiFootball.js,
+// hayErrorApiFootball), quedó claro que la enorme mayoría de los pedidos de
+// esta corrida venían chocando con el límite por minuto real del plan —
+// 120/min era optimista. Sigue siendo configurable por variable de entorno
+// sin redeploy si se confirma que el plan admite más.
+const MAX_REQUESTS_POR_MINUTO = Number(process.env.MAX_REQUESTS_POR_MINUTO_PLANTELES) || 60;
 const INTERVALO_ENTRE_REQUESTS_MS = Math.max(50, Math.ceil(60000 / MAX_REQUESTS_POR_MINUTO));
 let colaLimitador = Promise.resolve();
 function limitarRitmo() {
@@ -133,20 +139,29 @@ async function pMap(items, concurrencia, fn) {
 // equipo SÍ existe y el problema fue puramente de ritmo, así que vale la
 // pena esperar a que se libere la ventana de 1 minuto en vez de sumarlo a
 // "sin resolver" para siempre.
-async function conReintentoRateLimit(fn, esperaMs = 10000) {
+// REINTENTOS (subido de 1 a 3, a pedido — "llevamos días con esto"): ahora
+// que apiFootball.js reconoce el rate-limit también cuando `errors` viene en
+// formato array (ver hayErrorApiFootball, el bug real que hacía que la
+// enorme mayoría de los pendientes ni siquiera se marcaran como rate-limit),
+// muchos MÁS items van a entrar por esta rama que antes — un solo reintento
+// a los 10s puede no alcanzar si la ventana de 1 minuto de API-Football
+// todavía no se liberó. Con 3 intentos y espera creciente (10s/20s/30s) hay
+// mucho más margen para que la ventana se libere sola sin tener que esperar
+// a la corrida de mañana.
+async function conReintentoRateLimit(fn, esperaMs = 10000, intentosRestantes = 3) {
   try {
     return await fn();
   } catch (e) {
     // Cuota DIARIA/del plan agotada (ver apiFootball.js) — a diferencia del
     // límite por minuto, reintentar ahora no sirve de nada (va a fallar
-    // exactamente igual): no hay que esperar 10s ni consumir otro pedido,
-    // solo dejar que suba el error tal cual para que ejecutarRefresco()
-    // aborte la corrida entera en vez de seguir insistiendo item por item.
+    // exactamente igual): no hay que esperar ni consumir otro pedido, solo
+    // dejar que suba el error tal cual para que ejecutarRefresco() aborte la
+    // corrida entera en vez de seguir insistiendo item por item.
     if (e.esCuotaAgotada) throw e;
-    if (e.esRateLimit) {
-      console.warn(`[/refrescar-planteles] Rate limit — esperando ${esperaMs}ms antes de reintentar...`);
+    if (e.esRateLimit && intentosRestantes > 0) {
+      console.warn(`[/refrescar-planteles] Rate limit — esperando ${esperaMs}ms antes de reintentar (quedan ${intentosRestantes} intentos)...`);
       await pausa(esperaMs);
-      return fn();
+      return conReintentoRateLimit(fn, esperaMs + 10000, intentosRestantes - 1);
     }
     throw e;
   }

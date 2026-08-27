@@ -1169,6 +1169,26 @@ function cuotaDiariaAgotada(resp) {
   return restante != null && Number(restante) <= 0;
 }
 
+// BUG REAL ENCONTRADO (a pedido, "llevamos días con esto"): `data.errors` de
+// API-Football NO siempre viene como objeto ({ rateLimit: "..." } o
+// { requests: "..." }) — a veces viene como ARRAY de strings (esto ya
+// estaba comprobado y manejado en obtenerCuotas, más arriba en este mismo
+// archivo, con exactamente este mismo patrón `Array.isArray(errores) ? ... :
+// ...`). obtenerPerfilBasicoJugador y obtenerPlantelClub NO tenían este
+// chequeo — solo miraban `errores.rateLimit`/`errores.requests`, que en un
+// array siempre da `undefined` (los arrays no tienen esas propiedades) — así
+// que CUALQUIER rate-limit que llegara en formato array se colaba como
+// "sin perfil"/"sin plantel" de un jugador/equipo que en realidad SÍ existe,
+// nunca se reintentaba, y quedaba pendiente para siempre. Confirmado con los
+// números reales de una corrida: 941 pendientes, solo 4 marcados como rate
+// limit (los que por casualidad vinieron en formato objeto), 914 marcados
+// "sin perfil" sin ningún error explícito — ese 914 es casi seguro el mismo
+// rate limit, en el formato que este chequeo se estaba perdiendo.
+function hayErrorApiFootball(errores) {
+  if (!errores) return false;
+  return Array.isArray(errores) ? errores.length > 0 : Object.keys(errores).length > 0;
+}
+
 // ============================================================
 // PERFIL BÁSICO DE JUGADOR (solo edad + nacionalidad, en lote)
 // ============================================================
@@ -1205,7 +1225,7 @@ async function obtenerPerfilBasicoJugador(playerId) {
     // pueda esperar y reintentar en vez de darlo por perdido.
     const restante = resp.headers.get('x-ratelimit-requests-remaining');
     const erroresApi = data?.errors;
-    const esRateLimit = !!(erroresApi && (erroresApi.rateLimit || erroresApi.requests));
+    const esRateLimit = hayErrorApiFootball(erroresApi);
     console.error(
       `[obtenerPerfilBasicoJugador] Sin perfil para el jugador ${playerId}. ` +
       `errors=${JSON.stringify(erroresApi ?? null)} results=${data?.results ?? 'n/a'} ` +
@@ -1431,7 +1451,7 @@ async function obtenerPlantelClub(teamId) {
   // /refrescar-planteles probablemente eran en realidad el límite de
   // pedidos por minuto, no equipos sin plantel de verdad.
   const erroresSquad = dataSquad?.errors;
-  if (erroresSquad && (erroresSquad.rateLimit || erroresSquad.requests)) {
+  if (hayErrorApiFootball(erroresSquad)) {
     console.error(`[obtenerPlantelClub] Rate limit pidiendo el plantel del equipo ${teamId}: ${JSON.stringify(erroresSquad)}`);
     if (cuotaDiariaAgotada(respSquad)) {
       const errCuota = new Error('API-Football: cuota diaria/del plan agotada (no por minuto).');
