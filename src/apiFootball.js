@@ -13,10 +13,26 @@ const headers = { 'x-apisports-key': API_FOOTBALL_KEY };
 // Bet id 1 = "Match Winner" (Local / Empate / Visita) en API-Football.
 const BET_ID_MATCH_WINNER = 1;
 
+// Casas para la pestaña "Cuotas" comparativa (a pedido: "revisar los datos
+// que nos da la apifootball de casas de apuestas" para armar una tabla tipo
+// la de la captura de Pablo). Se probó con partidos reales de LALIGA y de
+// Primera División Chile vía /diagnostico-partido y NINGUNO trajo Betano,
+// 1xBet, Novibet, Betsson ni Stake (las de la captura original) — esta API
+// no las cubre. Las que sí aparecen consistentemente son estas 3 (de un set
+// más amplio que también incluye Marathonbet/Unibet/Betfair, pero Pablo
+// prefirió quedarse con las 3 más reconocibles para no alargar la tabla).
+const CASAS_COMPARATIVA = ['Bet365', 'William Hill', '10Bet'];
+
 // ---------- Cuotas (usado por /cuotas) ----------
-// No anclamos a una casa de apuestas específica (no hay dinero real de por
-// medio) — se toma la primera casa que tenga el mercado "Match Winner"
-// completo para ese fixture.
+// No anclamos a una casa de apuestas específica para la cuota "principal"
+// (la que paga diamantes — no hay dinero real de por medio) — se toma la
+// primera casa que tenga el mercado "Match Winner" completo para ese
+// fixture. Además, en la MISMA llamada a /odds (sin gastar cuota extra de
+// API-Football) se arma "comparativa": la cuota de cada una de
+// CASAS_COMPARATIVA que sí tenga el mercado completo — para la pestaña
+// "Cuotas" de la tarjeta de partido, que necesita ver varias casas a la vez
+// (a diferencia de la principal, que se queda con la primera y descarta el
+// resto).
 async function obtenerCuotas(fixtureId) {
   const resp = await fetch(`${BASE}/odds?fixture=${fixtureId}`, { headers });
   const data = await resp.json();
@@ -40,18 +56,35 @@ async function obtenerCuotas(fixtureId) {
     console.log(`[obtenerCuotas] Fixture ${fixtureId}: la API respondió OK pero sin bookmakers todavía (response.length=${(data?.response || []).length}).`);
   }
 
-  for (const bk of bookmakers) {
+  // Helper: de un bookmaker, si tiene Match Winner completo devuelve
+  // {local, empate, visita}; si no, null. Se reusa para la principal y la
+  // comparativa — mismo criterio de "completo" en los dos casos.
+  const cuotaCompletaDe = (bk) => {
     const bet = (bk.bets || []).find((b) => b.id === BET_ID_MATCH_WINNER);
-    if (!bet) continue;
+    if (!bet) return null;
     const home = bet.values.find((v) => v.value === 'Home');
     const draw = bet.values.find((v) => v.value === 'Draw');
     const away = bet.values.find((v) => v.value === 'Away');
-    if (!home || !draw || !away) continue;
+    if (!home || !draw || !away) return null;
+    return { local: parseFloat(home.odd), empate: parseFloat(draw.odd), visita: parseFloat(away.odd) };
+  };
+
+  const comparativa = {};
+  bookmakers.forEach((bk) => {
+    if (!CASAS_COMPARATIVA.includes(bk.name)) return;
+    const c = cuotaCompletaDe(bk);
+    if (c) comparativa[bk.name] = c;
+  });
+
+  for (const bk of bookmakers) {
+    const c = cuotaCompletaDe(bk);
+    if (!c) continue;
     return {
-      cuota_local: parseFloat(home.odd),
-      cuota_empate: parseFloat(draw.odd),
-      cuota_visita: parseFloat(away.odd),
+      cuota_local: c.local,
+      cuota_empate: c.empate,
+      cuota_visita: c.visita,
       casa: bk.name,
+      comparativa: Object.keys(comparativa).length > 0 ? comparativa : null,
     };
   }
   return null; // todavía no hay cuotas cargadas para este fixture

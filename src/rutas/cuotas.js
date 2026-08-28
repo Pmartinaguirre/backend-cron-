@@ -49,7 +49,7 @@ async function rutaCuotas(req, res) {
   const limiteTBD = new Date(ahora);
   limiteTBD.setDate(limiteTBD.getDate() + DIAS_VENTANA_TBD);
 
-  const columnas = 'id, pregunta, fixture_id_api, categoria, fecha_expiracion, estado_partido, cuota_local, estadio, estadio_ciudad, estadio_pais, estadio_capacidad, estadio_cesped, estadio_venue_id, estadio_imagen, arbitro, arbitro_pais, equipo_local_id, info_partido_corregida';
+  const columnas = 'id, pregunta, fixture_id_api, categoria, fecha_expiracion, estado_partido, cuota_local, cuotas_comparativa, estadio, estadio_ciudad, estadio_pais, estadio_capacidad, estadio_cesped, estadio_venue_id, estadio_imagen, arbitro, arbitro_pais, equipo_local_id, info_partido_corregida';
 
   // Estadio + árbitro (a pedido, "Información del partido" en la app): se
   // traen JUNTO con las cuotas, en la misma corrida — mismo criterio que
@@ -65,7 +65,11 @@ async function rutaCuotas(req, res) {
     .in('categoria', [4, 5])
     .eq('esta_activo', true)
     .not('fixture_id_api', 'is', null)
-    .or('cuota_local.is.null,estadio.is.null,arbitro.is.null,estadio_capacidad.is.null,estadio_imagen.is.null')
+    // cuotas_comparativa.is.null agregado a pedido (pestaña "Cuotas"): sin
+    // esto, un partido que YA tenía cuota_local guardada de antes de que
+    // existiera esta columna nunca volvía a pedirse — se quedaba sin
+    // comparativa para siempre.
+    .or('cuota_local.is.null,cuotas_comparativa.is.null,estadio.is.null,arbitro.is.null,estadio_capacidad.is.null,estadio_imagen.is.null')
     .gte('fecha_expiracion', ahora.toISOString())
     .lte('fecha_expiracion', limite.toISOString())
     // Los partidos que juegan más pronto primero (a pedido, junto con el
@@ -225,13 +229,20 @@ async function rutaCuotas(req, res) {
   for (const partido of partidos) {
     try {
       const payload = {};
-      // Cuotas: solo se pide si todavía no las tiene (ya idempotente antes).
-      if (partido.cuota_local == null) {
+      // Cuotas: se pide si falta la principal (paga diamantes) O la
+      // comparativa (pestaña "Cuotas", solo informativa) — ya idempotente,
+      // las dos vienen de la MISMA llamada a /odds (ver obtenerCuotas).
+      if (partido.cuota_local == null || partido.cuotas_comparativa == null) {
         const cuotas = await obtenerCuotas(partido.fixture_id_api);
         if (cuotas) {
-          payload.cuota_local = cuotas.cuota_local;
-          payload.cuota_empate = cuotas.cuota_empate;
-          payload.cuota_visita = cuotas.cuota_visita;
+          if (partido.cuota_local == null) {
+            payload.cuota_local = cuotas.cuota_local;
+            payload.cuota_empate = cuotas.cuota_empate;
+            payload.cuota_visita = cuotas.cuota_visita;
+          }
+          if (partido.cuotas_comparativa == null && cuotas.comparativa) {
+            payload.cuotas_comparativa = cuotas.comparativa;
+          }
         }
       }
       // Estadio/árbitro/fecha real: se pide si falta alguno de los datos, O
