@@ -136,6 +136,24 @@ async function rutaDiagnosticoPartido(req, res) {
           .filter(Boolean),
       }));
 
+      // Casas de apuestas CRUDAS (a pedido: "tenemos que revisar los datos
+      // que nos da la apifootball de casas de apuestas" — para la nueva
+      // pestaña "Cuotas" de la tarjeta de partido, que a diferencia de
+      // obtenerCuotas() en apiFootball.js (que se queda con la PRIMERA casa
+      // que tenga el mercado completo y descarta el resto) necesita ver
+      // VARIAS casas en simultáneo). Se manda la respuesta de /odds tal cual
+      // la entrega la API, sin recortar bookmakers ni mercados — así se
+      // puede confirmar a ojo qué casas aparecen de verdad (Betano, 1xBet,
+      // Novibet, Betsson, Stake...) y qué IDs de mercado trae cada una,
+      // antes de diseñar qué guardar.
+      let crudoOdds = null;
+      try {
+        const respOdds = await fetch(`${BASE}/odds?fixture=${fixtureId}`, { headers });
+        crudoOdds = await respOdds.json();
+      } catch (e) {
+        crudoOdds = `Error pidiendo /odds crudo: ${e.message}`;
+      }
+
       return res.json({
         fixtureId,
         local: fx.teams?.home?.name || null,
@@ -152,6 +170,7 @@ async function rutaDiagnosticoPartido(req, res) {
         arbitro: fx.fixture?.referee || null,
         jugadoresPorEquipo,
         ejemploCompletoJugador,
+        crudoOdds,
       });
     } catch (e) {
       console.error(`[/diagnostico-partido] Error con fixtureId ${fixtureId}:`, e);
