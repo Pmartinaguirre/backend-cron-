@@ -31,6 +31,8 @@ const { rutaRankingGrupo } = require('./src/rutas/rankingGrupo');
 const { rutaRankingGrupoHistorial } = require('./src/rutas/rankingGrupoHistorial');
 const { rutaRefrescarPlanteles } = require('./src/rutas/refrescarPlanteles');
 const { rutaAguanteEstado, rutaAguanteElegir, rutaAguanteResolver } = require('./src/rutas/aguante');
+const { rutaListarProductosPublico, rutaListarProductosAdmin, rutaGuardarProductoAdmin } = require('./src/rutas/fanMarketProductos');
+const { rutaObtenerPremios, rutaGuardarPremios, rutaConfirmarPremios, rutaMarcarPagado } = require('./src/rutas/grupoPremios');
 const {
   rutaNotificarRegistro,
   rutaNotificarInvitadoGrupo,
@@ -236,6 +238,33 @@ const permitirCorsInvitar = (req, res, next) => {
   res.header('Access-Control-Allow-Headers', 'Content-Type');
   next();
 };
+
+// Fan Market / Premios de grupo (a pedido, cambio "LETALES" 30-ago-2026):
+// ver src/rutas/fanMarketProductos.js y src/rutas/grupoPremios.js.
+// Lectura pública del catálogo (sin precio) — la usa el flujo de elección
+// de premios del grupo, sin secreto (mismo criterio que /equipos).
+app.get('/fan-market/productos', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  next();
+}, rutaListarProductosPublico);
+// Admin general del catálogo (CON precio_interno) — protegido con
+// X-Cron-Secret, solo lo usa el panel de admin general de Pablo.
+app.get('/fan-market/admin/productos', exigirSecreto, rutaListarProductosAdmin);
+app.options('/fan-market/admin/productos', permitirCorsInvitar, (req, res) => res.sendStatus(204));
+app.post('/fan-market/admin/productos', exigirSecreto, rutaGuardarProductoAdmin);
+// Estado de premios de un grupo: lectura pública (la ve cualquier
+// miembro), escritura validada adentro de la ruta (solo el admin_id real
+// del grupo puede guardar/confirmar).
+app.get('/grupo-premios', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  next();
+}, rutaObtenerPremios);
+app.options('/grupo-premios/guardar', permitirCorsInvitar, (req, res) => res.sendStatus(204));
+app.post('/grupo-premios/guardar', permitirCorsInvitar, rutaGuardarPremios);
+app.options('/grupo-premios/confirmar', permitirCorsInvitar, (req, res) => res.sendStatus(204));
+app.post('/grupo-premios/confirmar', permitirCorsInvitar, rutaConfirmarPremios);
+// Marcar pagado: solo Pablo, desde el admin general, protegido con secreto.
+app.post('/grupo-premios/admin/marcar-pagado', exigirSecreto, rutaMarcarPagado);
 app.options('/invitar-a-grupo', permitirCorsInvitar, (req, res) => res.sendStatus(204));
 app.post('/invitar-a-grupo', permitirCorsInvitar, rutaInvitarAGrupo);
 
