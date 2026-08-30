@@ -101,11 +101,19 @@ async function rutaAguanteEstado(req, res) {
   try {
     const { data: sala, error: errSala } = await supabase
       .from('salas_privadas_mvp')
-      .select('id, nombre, admin_id, modo_juego, aguante_competencia')
+      .select('id, nombre, admin_id, juega_aguante, aguante_competencia')
       .eq('id', salaId)
       .single();
     if (errSala || !sala) return res.status(404).json({ error: 'Grupo no encontrado.' });
-    if (sala.modo_juego !== 'aguante') {
+    // FIX (a pedido, cambio "LETALES": "los modos de juego, si están
+    // seteados por el admin, se juegan en paralelo ambos — lo tienes como
+    // un switch uno o el otro, modifica"): antes `modo_juego` era un
+    // string exclusivo ('polla' XOR 'aguante'), así que un grupo no podía
+    // jugar los dos a la vez. Ahora son 2 flags independientes
+    // (juega_polla/juega_aguante en salas_privadas_mvp) — este endpoint
+    // solo necesita que juega_aguante esté prendido, sin importar si
+    // también juega Polla.
+    if (!sala.juega_aguante) {
       return res.status(400).json({ error: 'Este grupo no juega en modo Aguante.' });
     }
 
@@ -195,7 +203,7 @@ async function rutaAguanteEstado(req, res) {
 
     res.json({
       salaId,
-      modoJuego: sala.modo_juego,
+      juegaAguante: sala.juega_aguante,
       competencia: sala.aguante_competencia,
       numeroSemana: semanaActual,
       partidosSemana,
@@ -222,11 +230,11 @@ async function rutaAguanteElegir(req, res) {
   try {
     const { data: sala, error: errSala } = await supabase
       .from('salas_privadas_mvp')
-      .select('id, modo_juego, aguante_competencia')
+      .select('id, juega_aguante, aguante_competencia')
       .eq('id', sala_id)
       .single();
     if (errSala || !sala) return res.status(404).json({ error: 'Grupo no encontrado.' });
-    if (sala.modo_juego !== 'aguante' || !sala.aguante_competencia) {
+    if (!sala.juega_aguante || !sala.aguante_competencia) {
       return res.status(400).json({ error: 'Este grupo no juega en modo Aguante.' });
     }
 
@@ -333,7 +341,7 @@ async function rutaAguanteResolver(req, res) {
     const { data: grupos, error: errGrupos } = await supabase
       .from('salas_privadas_mvp')
       .select('id, nombre, aguante_competencia')
-      .eq('modo_juego', 'aguante');
+      .eq('juega_aguante', true);
     if (errGrupos) return res.status(500).json({ error: errGrupos.message });
 
     const resultado = { semana: semanaObjetivo, grupos: [] };
