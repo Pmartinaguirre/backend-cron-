@@ -94,6 +94,13 @@ async function rutaBabyEstado(req, res) {
           golesLocalOficial: d.goles_local_oficial,
           golesVisitanteOficial: d.goles_visitante_oficial,
           resuelto: d.goles_local_oficial != null && d.goles_visitante_oficial != null,
+          // Cuotas reales (a pedido, "debe aparecer la cuota, los diamantes
+          // por ganar"): mismo campo que usa la tarjeta de Polla para el
+          // preview de diamantes potenciales — ver calcularDiamantesPorCuota
+          // en el frontend (src/utils/diamantes.js).
+          cuotaLocal: d.cuota_local,
+          cuotaEmpate: d.cuota_empate,
+          cuotaVisita: d.cuota_visita,
           miEleccion: miEleccionPorPartido[b.id]?.eleccion || null,
           miResultado: miEleccionPorPartido[b.id]?.resultado || null,
           misDiamantes: miEleccionPorPartido[b.id]?.diamantes_otorgados || 0,
