@@ -31,6 +31,7 @@ const { rutaRankingGrupo } = require('./src/rutas/rankingGrupo');
 const { rutaRankingGrupoHistorial } = require('./src/rutas/rankingGrupoHistorial');
 const { rutaRefrescarPlanteles } = require('./src/rutas/refrescarPlanteles');
 const { rutaAguanteEstado, rutaAguanteElegir, rutaAguanteResolver } = require('./src/rutas/aguante');
+const { rutaBabyEstado, rutaBabyElegir, rutaBabyResolver } = require('./src/rutas/baby');
 const { rutaListarProductosPublico, rutaListarProductosAdmin, rutaGuardarProductoAdmin } = require('./src/rutas/fanMarketProductos');
 const { rutaObtenerPremios, rutaGuardarPremios, rutaConfirmarPremios, rutaMarcarPagado } = require('./src/rutas/grupoPremios');
 const {
@@ -306,6 +307,19 @@ app.post('/aguante-elegir', permitirCorsInvitar, rutaAguanteElegir);
 // escribe en la base, así que lleva X-Cron-Secret.
 app.get('/aguante-resolver', exigirSecreto, rutaAguanteResolver);
 app.post('/aguante-resolver', exigirSecreto, rutaAguanteResolver);
+
+// "Baby" (a pedido, cambio "LETALES"): modo de juego GLOBAL — adivinar el
+// ganador (no marcador exacto) de 5 partidos elegidos por el admin cada
+// semana. Ver src/rutas/baby.js para el detalle completo de las 3 rutas.
+// Mismo criterio de CORS/secreto que El Aguante, arriba.
+app.get('/baby-estado', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  next();
+}, rutaBabyEstado);
+app.options('/baby-elegir', permitirCorsInvitar, (req, res) => res.sendStatus(204));
+app.post('/baby-elegir', permitirCorsInvitar, rutaBabyElegir);
+app.get('/baby-resolver', exigirSecreto, rutaBabyResolver);
+app.post('/baby-resolver', exigirSecreto, rutaBabyResolver);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
