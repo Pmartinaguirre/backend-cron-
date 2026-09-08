@@ -22,12 +22,23 @@ const normEquipo = (s) => String(s || '')
   .normalize('NFD').replace(/[̀-ͯ]/g, '')
   .toLowerCase().trim();
 
+// Modo de juego -> valores de `motivo` (mismo mapeo que rankingGrupo.js —
+// no se importa de ahí para no crear una dependencia circular, ambos
+// archivos son hojas del mismo árbol de rutas).
+const MOTIVOS_POR_MODO = { polla: ['cat4', 'cat5'], baby: ['baby'], aguante: [] };
+const MODOS_VALIDOS = ['polla', 'baby', 'aguante'];
+
 async function rutaRankingGrupoHistorial(req, res) {
   const salaId = req.query?.sala_id;
   const usuarioId = req.query?.usuario_id;
   if (!salaId || !usuarioId) {
     return res.status(400).json({ error: 'Faltan los parámetros "sala_id" y/o "usuario_id".' });
   }
+  // ?modo=polla|baby|aguante (a pedido: "dado que son ranking separados en
+  // el perfil del jug... debes poner un filtro por modo, para que se pueda
+  // revisar los diamantes que ganó cada jugador por modo") — sin ?modo (o
+  // ?modo=todos), se comporta igual que antes: todo junto.
+  const modoPedido = MODOS_VALIDOS.includes(req.query?.modo) ? req.query.modo : null;
 
   const { data: sala, error: errSala } = await supabase
     .from('salas_privadas_mvp')
@@ -131,13 +142,37 @@ async function rutaRankingGrupoHistorial(req, res) {
     .lte('fecha_creacion', hasta);
   if (errPagos) return res.status(500).json({ error: errPagos.message });
 
+  // BUG corregido (a pedido, encontrado investigando el pedido de filtro
+  // por modo): antes esto metía CUALQUIER pago con desafio_id en
+  // montoPorDesafio sin mirar `motivo` — incluidos los pagos de Baby
+  // (motivo='baby', que SÍ tienen desafio_id porque apuntan al partido real
+  // en desafios_mvp). Como más abajo solo se recorre predicciones_mvp
+  // (donde Baby NUNCA tiene fila — sus elecciones viven en
+  // baby_elecciones), esos montos de Baby quedaban en montoPorDesafio sin
+  // que ninguna fila los reclamara: desaparecían del historial Y del total
+  // mostrado en la ficha del jugador, aunque sí se contaban en la tabla de
+  // posiciones general (rankingGrupo.js). Ahora montoPorDesafio solo junta
+  // pagos de Polla (cat4/cat5) — los pagos de Baby se resuelven aparte, más
+  // abajo, cruzando baby_elecciones/baby_semana_partidos (ver filasBaby).
+  const MOTIVOS_POLLA = MOTIVOS_POR_MODO.polla;
   const montoPorDesafio = {};
   const bonosSinDesafio = [];
   (pagos || []).forEach((p) => {
+    const motivoDelPago = p.motivo || 'cat4';
     if (p.desafio_id) {
-      montoPorDesafio[p.desafio_id] = (montoPorDesafio[p.desafio_id] || 0) + (p.monto || 0);
+      if (MOTIVOS_POLLA.includes(motivoDelPago)) {
+        montoPorDesafio[p.desafio_id] = (montoPorDesafio[p.desafio_id] || 0) + (p.monto || 0);
+      }
+      // Los pagos de Baby con desafio_id se ignoran acá a propósito — se
+      // arman como filas propias más abajo, a partir de baby_elecciones
+      // (que además trae el dato de qué eligió el jugador, no solo cuánto
+      // ganó).
+    } else if (MOTIVOS_POLLA.includes(motivoDelPago) || !MOTIVOS_POR_MODO.baby.includes(motivoDelPago)) {
+      // Bono a mano de un admin, sin partido asociado — se cuenta como
+      // "Polla" salvo que el motivo diga explícitamente 'baby'.
+      bonosSinDesafio.push({ id: `bono-${p.id}`, fecha: p.fecha_creacion, partido: p.motivo || 'Diamantes', equipoLocal: null, equipoVisitante: null, tipoAcierto: [], diamantes: p.monto || 0, esApuesta: false, modo: 'polla' });
     } else {
-      bonosSinDesafio.push({ id: `bono-${p.id}`, fecha: p.fecha_creacion, partido: p.motivo || 'Diamantes', equipoLocal: null, equipoVisitante: null, tipoAcierto: [], diamantes: p.monto || 0, esApuesta: false });
+      bonosSinDesafio.push({ id: `bono-${p.id}`, fecha: p.fecha_creacion, partido: p.motivo || 'Diamantes', equipoLocal: null, equipoVisitante: null, tipoAcierto: [], diamantes: p.monto || 0, esApuesta: false, modo: 'baby' });
     }
   });
 
@@ -232,13 +267,97 @@ async function rutaRankingGrupoHistorial(req, res) {
       tipoAcierto,
       diamantes: montoPorDesafio[v.desafio_id] || 0,
       esApuesta: true,
+      modo: 'polla',
     });
   });
 
-  const todasLasFilas = [...filas, ...bonosSinDesafio].sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+  // Historial de BABY (a pedido — ver el bug explicado arriba en
+  // montoPorDesafio): Baby es un modo GLOBAL, no por grupo (el admin elige
+  // 5 partidos por semana para toda la app, no por sala — ver baby.js), así
+  // que estas filas se arman con la MISMA ventana de fechas (desde/hasta)
+  // y el MISMO filtro de competencia/equipos_seguidos que el resto del
+  // historial de este grupo, pero cruzando baby_elecciones +
+  // baby_semana_partidos en vez de predicciones_mvp (Baby no vota ahí).
+  const { data: eleccionesBaby, error: errEleccionesBaby } = await supabase
+    .from('baby_elecciones')
+    .select('id, baby_partido_id, eleccion, resultado, diamantes_otorgados')
+    .eq('usuario_id', usuarioId)
+    .neq('resultado', 'pendiente');
+  if (errEleccionesBaby) return res.status(500).json({ error: errEleccionesBaby.message });
+
+  const filasBaby = [];
+  if (eleccionesBaby && eleccionesBaby.length > 0) {
+    const idsBabyPartidos = [...new Set(eleccionesBaby.map((e) => e.baby_partido_id))];
+    const { data: babyPartidos, error: errBabyPartidos } = await supabase
+      .from('baby_semana_partidos')
+      .select('id, desafio_id')
+      .in('id', idsBabyPartidos);
+    if (errBabyPartidos) return res.status(500).json({ error: errBabyPartidos.message });
+    const desafioIdPorBabyPartido = {};
+    (babyPartidos || []).forEach((b) => { desafioIdPorBabyPartido[b.id] = b.desafio_id; });
+
+    const idsDesafiosBaby = [...new Set(Object.values(desafioIdPorBabyPartido).filter(Boolean))];
+    const desafioBabyPorId = {};
+    if (idsDesafiosBaby.length > 0) {
+      const { data: desafiosBaby, error: errDesafiosBaby } = await supabase
+        .from('desafios_mvp')
+        .select('id, tema, subtema, equipo_local, equipo_visitante, es_destacado, fecha_expiracion, goles_local_oficial, goles_visitante_oficial')
+        .in('id', idsDesafiosBaby);
+      if (errDesafiosBaby) return res.status(500).json({ error: errDesafiosBaby.message });
+      (desafiosBaby || []).forEach((d) => { desafioBabyPorId[d.id] = d; });
+    }
+
+    const NOMBRE_ELECCION = { local: 'Local', empate: 'Empate', visita: 'Visita' };
+    eleccionesBaby.forEach((e) => {
+      const desafioId = desafioIdPorBabyPartido[e.baby_partido_id];
+      const desafio = desafioId ? desafioBabyPorId[desafioId] : null;
+      if (!desafio) return;
+      if (!desafio.fecha_expiracion || desafio.fecha_expiracion < desde || desafio.fecha_expiracion > hasta) return;
+
+      if (hayRestriccion) {
+        const temaCalza = temaCalzaConGrupo(desafio, desafio.fecha_expiracion);
+        const equipoCalza = equiposSeguidosNorm.length > 0 && (
+          equiposSeguidosNorm.includes(normEquipo(desafio.equipo_local)) ||
+          equiposSeguidosNorm.includes(normEquipo(desafio.equipo_visitante))
+        );
+        if (!temaCalza && !equipoCalza) return;
+      }
+
+      const partido = desafio.equipo_local && desafio.equipo_visitante
+        ? `${desafio.equipo_local} vs ${desafio.equipo_visitante}`
+        : (desafio.tema || 'Partido');
+
+      filasBaby.push({
+        id: `baby-${e.id}`,
+        fecha: desafio.fecha_expiracion,
+        tema: desafio.tema || null,
+        partido,
+        equipoLocal: desafio.equipo_local || null,
+        equipoVisitante: desafio.equipo_visitante || null,
+        golesLocalOficial: desafio.goles_local_oficial != null ? Number(desafio.goles_local_oficial) : null,
+        golesVisitaOficial: desafio.goles_visitante_oficial != null ? Number(desafio.goles_visitante_oficial) : null,
+        resultadoOficial: null,
+        // Baby solo adivina el GANADOR (local/empate/visita) — nunca
+        // marcador exacto, esa es la diferencia con Polla (ver baby.js).
+        tuApuesta: NOMBRE_ELECCION[e.eleccion] || e.eleccion || null,
+        tipoAcierto: e.resultado === 'acierto' ? ['LEV'] : [],
+        diamantes: e.diamantes_otorgados || 0,
+        esApuesta: true,
+        modo: 'baby',
+      });
+    });
+  }
+
+  // Filtro final por modo (?modo=polla|baby|aguante) — sin ?modo, se
+  // muestra todo junto (acumulado), igual que antes de este cambio.
+  let todasLasFilas = [...filas, ...filasBaby, ...bonosSinDesafio];
+  if (modoPedido) {
+    todasLasFilas = todasLasFilas.filter((f) => f.modo === modoPedido);
+  }
+  todasLasFilas = todasLasFilas.sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
   const total = todasLasFilas.reduce((acc, f) => acc + (f.diamantes || 0), 0);
 
-  res.json({ salaId, usuarioId, desde, hasta, total, filas: todasLasFilas });
+  res.json({ salaId, usuarioId, desde, hasta, modo: modoPedido || 'todos', total, filas: todasLasFilas });
 }
 
 module.exports = { rutaRankingGrupoHistorial };

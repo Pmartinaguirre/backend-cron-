@@ -79,14 +79,35 @@ function compararJugadoresGrupo(a, b) {
 // Tira una excepción { status, message } en vez de contestar res
 // directamente — quien llama decide qué hacer con el error (responder
 // HTTP, o solo loguear y seguir con el resto de los grupos del cron).
-async function calcularTablaGrupo(salaId, { periodo = null, semana = null } = {}) {
+// Modo de juego -> qué valores de `motivo` de diamantes_historial_mvp le
+// corresponden (a pedido: "cuando los grupos eligen más de un modo debes
+// armar tablas independientes de posiciones... el filtro debe tener todos
+// los modos del grupo y tb un filtro todos los modos acumulados" — bug
+// reportado: "en la semana 37 a mi usuario que jugué polla y baby me sumó
+// todos los puntos juntos"). Polla paga con motivo 'cat4'/'cat5'
+// (resolver.js), Baby con motivo 'baby' (baby.js). Aguante no paga
+// diamantes hoy (aguante.js solo actualiza vidas/eliminado), así que no
+// tiene un valor de motivo propio — si se pide ?modo=aguante, no matchea
+// ningún pago y la suma queda en 0 (correcto: no hay nada que mostrar).
+const MOTIVOS_POR_MODO = {
+  polla: ['cat4', 'cat5'],
+  baby: ['baby'],
+  aguante: [],
+};
+const MODOS_VALIDOS = ['polla', 'baby', 'aguante'];
+
+async function calcularTablaGrupo(salaId, { periodo = null, semana = null, modo = null } = {}) {
   if (!salaId) {
     throw Object.assign(new Error('Falta el parámetro "sala_id".'), { status: 400 });
   }
+  // ?modo=polla|baby|aguante filtra la tabla a un solo modo de juego; sin
+  // ?modo (o ?modo=todos), se comporta igual que antes — acumulado de
+  // todos los modos que el grupo tenga activos.
+  const modoPedido = MODOS_VALIDOS.includes(modo) ? modo : null;
 
   const { data: sala, error: errSala } = await supabase
     .from('salas_privadas_mvp')
-    .select('id, nombre, admin_id, juego_activo, fecha_inicio_conteo, fecha_fin_conteo, competencias, equipos_seguidos, modo_competencias, competencias_fechas')
+    .select('id, nombre, admin_id, juego_activo, fecha_inicio_conteo, fecha_fin_conteo, competencias, equipos_seguidos, modo_competencias, competencias_fechas, juega_polla, juega_baby, juega_aguante')
     .eq('id', salaId)
     .single();
   if (errSala || !sala) {
@@ -174,7 +195,7 @@ async function calcularTablaGrupo(salaId, { periodo = null, semana = null } = {}
   const inicioMasTemprano = Object.values(inicioPorUsuario).sort()[0];
   const { data: historial, error: errHist } = await supabase
     .from('diamantes_historial_mvp')
-    .select('usuario_id, monto, fecha_creacion, desafio_id')
+    .select('usuario_id, monto, fecha_creacion, desafio_id, motivo')
     .in('usuario_id', idsUnicos)
     .gte('fecha_creacion', inicioMasTemprano)
     .lte('fecha_creacion', finVentana);
@@ -297,6 +318,15 @@ async function calcularTablaGrupo(salaId, { periodo = null, semana = null } = {}
   const sumaPorUsuario = {};
   idsUnicos.forEach((id) => { sumaPorUsuario[id] = 0; });
   (historial || []).forEach((h) => {
+    // Filtro por modo (ver MOTIVOS_POR_MODO arriba) — un pago sin `motivo`
+    // guardado (bono a mano de un admin, de antes de que existiera esta
+    // columna) se cuenta igual que un pago de Polla, criterio histórico:
+    // hasta que existió Baby, todo lo que se pagaba era Polla.
+    if (modoPedido) {
+      const motivosDelModo = MOTIVOS_POR_MODO[modoPedido] || [];
+      const motivoDelPago = h.motivo || 'cat4';
+      if (!motivosDelModo.includes(motivoDelPago)) return;
+    }
     const desde = inicioPorUsuario[h.usuario_id];
     if (!desde || h.fecha_creacion < desde) return;
     if (h.desafio_id && hayRestriccion) {
@@ -330,10 +360,19 @@ async function calcularTablaGrupo(salaId, { periodo = null, semana = null } = {}
   // insert de votos no la guarda) — la ventana se mira contra
   // desafio.fecha_expiracion (fecha del partido), igual que hace el
   // Ranking global.
-  const { data: votos, error: errVotos } = await supabase
-    .from('predicciones_mvp')
-    .select('usuario_id, desafio_id, eleccion, respuesta_extra')
-    .in('usuario_id', idsUnicos);
+  // predicciones_mvp (Cat.4/5) es SOLO Polla — Baby vive en
+  // baby_elecciones/baby_semana_partidos, otra tabla. Si se pidió
+  // ?modo=baby o ?modo=aguante, estas columnas (PJ/PA/DG/EX/REN) no le
+  // corresponden a ese modo — se saltea la consulta y quedan en 0 para
+  // todos, en vez de mostrar los partidos de Polla mezclados en una tabla
+  // que se pidió filtrada a otro modo.
+  const saltarStatsPolla = modoPedido === 'baby' || modoPedido === 'aguante';
+  const { data: votos, error: errVotos } = saltarStatsPolla
+    ? { data: [] }
+    : await supabase
+      .from('predicciones_mvp')
+      .select('usuario_id, desafio_id, eleccion, respuesta_extra')
+      .in('usuario_id', idsUnicos);
   if (errVotos) {
     throw Object.assign(new Error(errVotos.message), { status: 500 });
   }
@@ -425,6 +464,12 @@ async function calcularTablaGrupo(salaId, { periodo = null, semana = null } = {}
     j.posicion = jugadores.filter((x) => compararJugadoresGrupo(x, j) < 0).length + 1;
   });
 
+  // Modos activos del grupo (para que el frontend arme los botones del
+  // filtro sin tener que adivinar qué modos tiene prendidos este grupo en
+  // particular) — a pedido: "el filtro debe tener todos los modos del
+  // grupo y tb un filtro todos los modos acumulados".
+  const modosActivosGrupo = MODOS_VALIDOS.filter((m) => sala[`juega_${m}`]);
+
   return {
     salaId,
     juegoActivo: sala.juego_activo,
@@ -435,6 +480,8 @@ async function calcularTablaGrupo(salaId, { periodo = null, semana = null } = {}
     rangoSemana: inicioSemanaFiltro !== null
       ? { inicio: new Date(inicioSemanaFiltro).toISOString(), fin: new Date(finSemanaFiltro).toISOString() }
       : null,
+    modo: modoPedido || 'todos',
+    modosActivosGrupo,
     total: jugadores.length,
     jugadores,
   };
@@ -449,6 +496,7 @@ async function rutaRankingGrupo(req, res) {
     const resultado = await calcularTablaGrupo(req.query?.sala_id, {
       periodo: req.query?.periodo,
       semana: req.query?.semana,
+      modo: req.query?.modo,
     });
     res.json(resultado);
   } catch (e) {
@@ -456,4 +504,4 @@ async function rutaRankingGrupo(req, res) {
   }
 }
 
-module.exports = { rutaRankingGrupo, calcularTablaGrupo };
+module.exports = { rutaRankingGrupo, calcularTablaGrupo, MOTIVOS_POR_MODO, MODOS_VALIDOS };
