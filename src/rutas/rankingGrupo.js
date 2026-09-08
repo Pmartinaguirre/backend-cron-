@@ -114,6 +114,28 @@ async function calcularTablaGrupo(salaId, { periodo = null, semana = null, modo 
     throw Object.assign(new Error('Grupo no encontrado.'), { status: 404 });
   }
 
+  // FIX (a pedido, bug reportado: "sigue tomando partidos de esa semana
+  // que no son de polla, toma los de baby" — Martin10/Edgol veían el MISMO
+  // partido dos veces en el historial, una vez con su marcador exacto de
+  // Polla y otra con su elección L/E/V de Baby, ambas sumando diamantes
+  // igual). Causa real: sin ?modo (que es SIEMPRE el caso ahora que se
+  // sacó el selector del frontend, ver #366), `modoPedido` quedaba en
+  // null y el filtro de motivo de más abajo se SALTEABA por completo — así
+  // que TODO el historial de diamantes del jugador entraba a la tabla del
+  // grupo, sin importar si ese pago fue de Polla o de Baby, ni si el grupo
+  // en verdad tiene ese modo activado. Baby además es GLOBAL (no por
+  // grupo, ver MOTIVOS_POR_MODO más arriba), así que un jugador que juega
+  // Baby en OTRO grupo (o antes de que este grupo existiera) veía esos
+  // diamantes de Baby colados en la tabla de un grupo que solo juega
+  // Polla. Ahora, sin ?modo explícito, se arma la lista de motivos
+  // permitidos a partir de los modos que el GRUPO tiene realmente
+  // activos (juega_polla/juega_baby) — nunca "sin filtro".
+  const modosActivosSala = MODOS_VALIDOS.filter((m) => sala[`juega_${m}`]);
+  if (modosActivosSala.length === 0) modosActivosSala.push('polla'); // grupo viejo sin flags -> polla, mismo criterio histórico
+  const motivosPermitidos = modoPedido
+    ? (MOTIVOS_POR_MODO[modoPedido] || [])
+    : modosActivosSala.flatMap((m) => MOTIVOS_POR_MODO[m] || []);
+
   const { data: miembrosData, error: errMiembros } = await supabase
     .from('salas_privadas_miembros_mvp')
     .select('usuario_id, fecha_union')
@@ -318,15 +340,15 @@ async function calcularTablaGrupo(salaId, { periodo = null, semana = null, modo 
   const sumaPorUsuario = {};
   idsUnicos.forEach((id) => { sumaPorUsuario[id] = 0; });
   (historial || []).forEach((h) => {
-    // Filtro por modo (ver MOTIVOS_POR_MODO arriba) — un pago sin `motivo`
-    // guardado (bono a mano de un admin, de antes de que existiera esta
-    // columna) se cuenta igual que un pago de Polla, criterio histórico:
-    // hasta que existió Baby, todo lo que se pagaba era Polla.
-    if (modoPedido) {
-      const motivosDelModo = MOTIVOS_POR_MODO[modoPedido] || [];
-      const motivoDelPago = h.motivo || 'cat4';
-      if (!motivosDelModo.includes(motivoDelPago)) return;
-    }
+    // Filtro por modo (ver motivosPermitidos más arriba) — SIEMPRE se
+    // aplica, con o sin ?modo explícito (antes, sin ?modo, esto se
+    // saltaba entero — ver el comentario grande donde se arma
+    // motivosPermitidos). Un pago sin `motivo` guardado (bono a mano de un
+    // admin, de antes de que existiera esta columna) se cuenta como Polla,
+    // criterio histórico: hasta que existió Baby, todo lo que se pagaba
+    // era Polla.
+    const motivoDelPago = h.motivo || 'cat4';
+    if (!motivosPermitidos.includes(motivoDelPago)) return;
     const desde = inicioPorUsuario[h.usuario_id];
     if (!desde || h.fecha_creacion < desde) return;
     if (h.desafio_id && hayRestriccion) {
@@ -362,11 +384,14 @@ async function calcularTablaGrupo(salaId, { periodo = null, semana = null, modo 
   // Ranking global.
   // predicciones_mvp (Cat.4/5) es SOLO Polla — Baby vive en
   // baby_elecciones/baby_semana_partidos, otra tabla. Si se pidió
-  // ?modo=baby o ?modo=aguante, estas columnas (PJ/PA/DG/EX/REN) no le
-  // corresponden a ese modo — se saltea la consulta y quedan en 0 para
-  // todos, en vez de mostrar los partidos de Polla mezclados en una tabla
-  // que se pidió filtrada a otro modo.
-  const saltarStatsPolla = modoPedido === 'baby' || modoPedido === 'aguante';
+  // ?modo=baby/aguante EXPLÍCITO, o si el grupo ni siquiera juega Polla
+  // (modosActivosSala no lo incluye — mismo fix de arriba: antes esto solo
+  // miraba modoPedido, así que un grupo que solo juega Baby, sin ?modo
+  // explícito, igual calculaba PJ/PA/DG/EX de partidos de Polla que ese
+  // grupo ni sigue), estas columnas no le corresponden — se saltea la
+  // consulta y quedan en 0 para todos.
+  const saltarStatsPolla = modoPedido === 'baby' || modoPedido === 'aguante'
+    || (!modoPedido && !modosActivosSala.includes('polla'));
   const { data: votos, error: errVotos } = saltarStatsPolla
     ? { data: [] }
     : await supabase

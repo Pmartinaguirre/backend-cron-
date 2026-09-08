@@ -42,12 +42,24 @@ async function rutaRankingGrupoHistorial(req, res) {
 
   const { data: sala, error: errSala } = await supabase
     .from('salas_privadas_mvp')
-    .select('id, admin_id, juego_activo, fecha_inicio_conteo, fecha_fin_conteo, competencias, equipos_seguidos, modo_competencias, competencias_fechas')
+    .select('id, admin_id, juego_activo, fecha_inicio_conteo, fecha_fin_conteo, competencias, equipos_seguidos, modo_competencias, competencias_fechas, juega_polla, juega_baby, juega_aguante')
     .eq('id', salaId)
     .single();
   if (errSala || !sala) {
     return res.status(404).json({ error: 'Grupo no encontrado.' });
   }
+
+  // FIX (a pedido, bug reportado: "sigue tomando partidos que no son de
+  // Polla, toma los de Baby" — el mismo bug que en rankingGrupo.js, ver el
+  // comentario grande ahí): sin ?modo explícito (que es siempre el caso
+  // ahora, ver #366), el filtro de más abajo se saltaba entero y este
+  // historial mostraba TANTO las filas de Polla como las de Baby (Baby es
+  // GLOBAL, no por grupo — ver el comentario grande sobre filasBaby más
+  // abajo), aunque el grupo solo jugara uno de los dos modos. Ahora, sin
+  // ?modo, se arma la lista de modos permitidos a partir de lo que el
+  // GRUPO tiene realmente activo.
+  const modosActivosSala = MODOS_VALIDOS.filter((m) => sala[`juega_${m}`]);
+  if (modosActivosSala.length === 0) modosActivosSala.push('polla');
 
   // ¿Es miembro? (el admin cuenta aunque no tenga fila propia, mismo
   // criterio que rankingGrupo.js).
@@ -348,12 +360,12 @@ async function rutaRankingGrupoHistorial(req, res) {
     });
   }
 
-  // Filtro final por modo (?modo=polla|baby|aguante) — sin ?modo, se
-  // muestra todo junto (acumulado), igual que antes de este cambio.
+  // Filtro final por modo (?modo=polla|baby|aguante) — SIEMPRE se aplica,
+  // con o sin ?modo explícito: sin ?modo, se restringe a los modos que el
+  // GRUPO tiene activos (modosActivosSala, ver arriba), nunca "todo sin
+  // filtrar" (ese era el bug).
   let todasLasFilas = [...filas, ...filasBaby, ...bonosSinDesafio];
-  if (modoPedido) {
-    todasLasFilas = todasLasFilas.filter((f) => f.modo === modoPedido);
-  }
+  todasLasFilas = todasLasFilas.filter((f) => (modoPedido ? f.modo === modoPedido : modosActivosSala.includes(f.modo)));
   todasLasFilas = todasLasFilas.sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
   const total = todasLasFilas.reduce((acc, f) => acc + (f.diamantes || 0), 0);
 
