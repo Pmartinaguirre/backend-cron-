@@ -382,16 +382,155 @@ async function rutaAguanteElegir(req, res) {
   }
 }
 
+// Resuelve UNA semana puntual para UN grupo — extraído a función propia (a
+// pedido, bug reportado: "corrí el cron aguante-resolver pero la fecha 36
+// sigue en Pendiente" — el cron sin ?semana solo resolvía semanaActual-1,
+// así que si el cronjob estuvo semanas sin existir, esas semanas viejas
+// quedaban en 'pendiente' PARA SIEMPRE salvo que alguien pidiera a mano
+// ?semana=36, ?semana=35, etc., una por una). Devuelve { procesados,
+// sinResolverTodavia }.
+async function resolverSemanaAguante(grupo, semanaObjetivo) {
+  const { inicio, fin } = rangoDeSemana(semanaObjetivo);
+
+  // Todos los partidos de la RONDA VIGENTE de esa competencia esta semana
+  // (no cualquier partido reprogramado que caiga en la misma ventana).
+  const partidosSemana = await partidosDeLaRondaVigente(grupo.aguante_competencia, inicio, fin);
+
+  const resultadoDeEquipo = (equipo) => {
+    const partido = (partidosSemana || []).find(
+      (d) => d.equipo_local === equipo || d.equipo_visitante === equipo
+    );
+    if (!partido) return null; // no jugó esta semana (o no encontramos el partido) — no resolver todavía
+    if (partido.goles_local_oficial == null || partido.goles_visitante_oficial == null) return null; // sin resultado aún
+    const esLocal = partido.equipo_local === equipo;
+    const golesFavor = esLocal ? partido.goles_local_oficial : partido.goles_visitante_oficial;
+    const golesContra = esLocal ? partido.goles_visitante_oficial : partido.goles_local_oficial;
+    if (golesFavor > golesContra) return 'vivo';
+    if (golesFavor === golesContra) return 'vivo'; // empate no mata
+    return 'muerto';
+  };
+
+  const { data: participantesActivos, error: errPart } = await supabase
+    .from('aguante_participantes')
+    .select('id, usuario_id, vidas_restantes, eliminado')
+    .eq('sala_id', grupo.id)
+    .eq('eliminado', false);
+  if (errPart) return { error: errPart.message };
+
+  const { data: eleccionesSemana } = await supabase
+    .from('aguante_elecciones')
+    .select('id, usuario_id, equipo, resultado')
+    .eq('sala_id', grupo.id)
+    .eq('numero_semana', semanaObjetivo);
+  const eleccionPorUsuario = {};
+  (eleccionesSemana || []).forEach((e) => { eleccionPorUsuario[e.usuario_id] = e; });
+
+  let procesados = 0;
+  let sinResolverTodavia = 0;
+  for (const p of participantesActivos || []) {
+    const eleccion = eleccionPorUsuario[p.usuario_id];
+    if (!eleccion) {
+      // No eligió a tiempo esa semana — mismo castigo que perder. Se
+      // guarda una fila en aguante_elecciones con equipo "Sin elección" (a
+      // pedido de idempotencia: antes esto NO dejaba ningún rastro, así
+      // que si el cron se corría dos veces para la misma semana — algo que
+      // pasa seguido ahora que /aguante-resolver hace catch-up automático
+      // de semanas viejas, ver más abajo — le volvía a quitar una vida de
+      // más la segunda vez). Con la fila guardada, la próxima corrida la
+      // encuentra en eleccionPorUsuario y no vuelve a entrar acá.
+      const vidasNuevas = p.vidas_restantes - 1;
+      await Promise.all([
+        supabase
+          .from('aguante_participantes')
+          .update({ vidas_restantes: vidasNuevas, eliminado: vidasNuevas <= 0, fecha_eliminacion: vidasNuevas <= 0 ? new Date().toISOString() : null })
+          .eq('id', p.id),
+        supabase
+          .from('aguante_elecciones')
+          .upsert(
+            { sala_id: grupo.id, usuario_id: p.usuario_id, numero_semana: semanaObjetivo, equipo: 'Sin elección', resultado: 'muerto', fecha_eleccion: new Date().toISOString() },
+            { onConflict: 'sala_id,usuario_id,numero_semana' }
+          ),
+      ]);
+      procesados++;
+      continue;
+    }
+    if (eleccion.resultado !== 'pendiente') continue; // ya resuelta (cron corrió antes)
+
+    const resultadoEquipo = resultadoDeEquipo(eleccion.equipo);
+    if (!resultadoEquipo) { sinResolverTodavia++; continue; } // todavía no hay resultado — se reintenta en la próxima corrida
+
+    await supabase.from('aguante_elecciones').update({ resultado: resultadoEquipo }).eq('id', eleccion.id);
+    if (resultadoEquipo === 'muerto') {
+      const vidasNuevas = p.vidas_restantes - 1;
+      await supabase
+        .from('aguante_participantes')
+        .update({ vidas_restantes: vidasNuevas, eliminado: vidasNuevas <= 0, fecha_eliminacion: vidasNuevas <= 0 ? new Date().toISOString() : null })
+        .eq('id', p.id);
+    }
+    procesados++;
+  }
+
+  return { procesados, sinResolverTodavia };
+}
+
+// Otorga la medalla de "Ganador de El Aguante" (a pedido: "gané el aguante
+// pero no me dio la medalla en mi perfil") cuando el grupo queda con 1 solo
+// jugador vivo (o 0, si los últimos 2 caen la misma semana — en ese caso
+// nadie sobrevivió, no se premia a nadie salvo que haya quedado un único
+// líder con más vidas, que hoy no se distingue, así que se deja sin premiar
+// ese caso raro). Se guarda en grupo_ganadores_semanales (misma tabla que
+// usa "Premios ganados" en la ficha de jugador) con modo='aguante' — a
+// diferencia de Polla/Baby esto NO es semanal, es el campeón de TODA la
+// ronda de El Aguante del grupo, así que solo se inserta UNA vez por grupo
+// (se revisa que no exista ya una fila modo='aguante' para esta sala antes
+// de insertar, para no duplicar si el cron corre de nuevo).
+async function otorgarMedallaAguanteSiTermino(grupo, semanaObjetivo) {
+  const { data: yaExiste } = await supabase
+    .from('grupo_ganadores_semanales')
+    .select('id')
+    .eq('sala_id', grupo.id)
+    .eq('modo', 'aguante')
+    .limit(1);
+  if (yaExiste && yaExiste.length > 0) return; // ya premiado antes, no duplicar
+
+  const { data: participantes } = await supabase
+    .from('aguante_participantes')
+    .select('usuario_id, eliminado')
+    .eq('sala_id', grupo.id);
+  if (!participantes || participantes.length === 0) return;
+
+  const vivos = participantes.filter((p) => !p.eliminado);
+  if (vivos.length !== 1) return; // todavía no terminó (o terminó en doble KO, caso no premiado)
+
+  await supabase.from('grupo_ganadores_semanales').insert({
+    sala_id: grupo.id,
+    numero_semana: semanaObjetivo,
+    modo: 'aguante',
+    usuario_id: vivos[0].usuario_id,
+    diamantes_semana: 0, // El Aguante no paga diamantes, la medalla es solo por sobrevivir
+  });
+}
+
 // ============================================================
 // GET /aguante-resolver  (cron semanal, con X-Cron-Secret)
+// ?semana=N: resuelve solo esa semana puntual. Sin ?semana: resuelve
+// semanaActual-1 Y hace catch-up de hasta 10 semanas hacia atrás por si
+// quedaron sin resolver (a pedido, bug reportado: el cronjob de
+// aguante-resolver no existía en cron-job.org durante varias semanas, así
+// que semanas viejas quedaron en 'pendiente' para siempre porque nadie las
+// pedía explícitamente) — es seguro repetir semanas ya resueltas, no hace
+// nada de más (ver idempotencia en resolverSemanaAguante).
 // ============================================================
 async function rutaAguanteResolver(req, res) {
   const semanaActual = numeroSemanaDe(Date.now());
-  const semanaObjetivo = req.query?.semana ? Number(req.query.semana) : semanaActual - 1;
-  if (!Number.isFinite(semanaObjetivo) || semanaObjetivo < 1) {
+  const semanaPedida = req.query?.semana ? Number(req.query.semana) : null;
+  if (req.query?.semana && (!Number.isFinite(semanaPedida) || semanaPedida < 1)) {
     return res.status(400).json({ error: 'Número de semana inválido.' });
   }
-  const { inicio, fin } = rangoDeSemana(semanaObjetivo);
+  const CATCHUP_MAX_SEMANAS = 10;
+  const semanasAProcesar = semanaPedida
+    ? [semanaPedida]
+    : Array.from({ length: CATCHUP_MAX_SEMANAS }, (_, i) => semanaActual - 1 - i).filter((n) => n >= 1);
 
   try {
     const { data: grupos, error: errGrupos } = await supabase
@@ -400,76 +539,27 @@ async function rutaAguanteResolver(req, res) {
       .eq('juega_aguante', true);
     if (errGrupos) return res.status(500).json({ error: errGrupos.message });
 
-    const resultado = { semana: semanaObjetivo, grupos: [] };
+    const resultado = { semanasProcesadas: semanasAProcesar, grupos: [] };
 
     for (const grupo of grupos || []) {
       if (!grupo.aguante_competencia) continue;
 
-      // Todos los partidos de la RONDA VIGENTE de esa competencia esta
-      // semana (no cualquier partido reprogramado que caiga en la misma
-      // ventana) — se trae una vez por grupo y se busca adentro por equipo.
-      const partidosSemana = await partidosDeLaRondaVigente(grupo.aguante_competencia, inicio, fin);
-
-      const resultadoDeEquipo = (equipo) => {
-        const partido = (partidosSemana || []).find(
-          (d) => d.equipo_local === equipo || d.equipo_visitante === equipo
-        );
-        if (!partido) return null; // no jugó esta semana (o no encontramos el partido) — no resolver todavía
-        if (partido.goles_local_oficial == null || partido.goles_visitante_oficial == null) return null; // sin resultado aún
-        const esLocal = partido.equipo_local === equipo;
-        const golesFavor = esLocal ? partido.goles_local_oficial : partido.goles_visitante_oficial;
-        const golesContra = esLocal ? partido.goles_visitante_oficial : partido.goles_local_oficial;
-        if (golesFavor > golesContra) return 'vivo';
-        if (golesFavor === golesContra) return 'vivo'; // empate no mata
-        return 'muerto';
-      };
-
-      const { data: participantesActivos, error: errPart } = await supabase
-        .from('aguante_participantes')
-        .select('id, usuario_id, vidas_restantes, eliminado')
-        .eq('sala_id', grupo.id)
-        .eq('eliminado', false);
-      if (errPart) { resultado.grupos.push({ sala_id: grupo.id, error: errPart.message }); continue; }
-
-      const { data: eleccionesSemana } = await supabase
-        .from('aguante_elecciones')
-        .select('id, usuario_id, equipo, resultado')
-        .eq('sala_id', grupo.id)
-        .eq('numero_semana', semanaObjetivo);
-      const eleccionPorUsuario = {};
-      (eleccionesSemana || []).forEach((e) => { eleccionPorUsuario[e.usuario_id] = e; });
-
-      let procesados = 0;
-      let sinResolverTodavia = 0;
-      for (const p of participantesActivos || []) {
-        const eleccion = eleccionPorUsuario[p.usuario_id];
-        if (!eleccion) {
-          // No eligió a tiempo esa semana — mismo castigo que perder.
-          const vidasNuevas = p.vidas_restantes - 1;
-          await supabase
-            .from('aguante_participantes')
-            .update({ vidas_restantes: vidasNuevas, eliminado: vidasNuevas <= 0, fecha_eliminacion: vidasNuevas <= 0 ? new Date().toISOString() : null })
-            .eq('id', p.id);
-          procesados++;
-          continue;
-        }
-        if (eleccion.resultado !== 'pendiente') continue; // ya resuelta (cron corrió antes)
-
-        const resultadoEquipo = resultadoDeEquipo(eleccion.equipo);
-        if (!resultadoEquipo) { sinResolverTodavia++; continue; } // todavía no hay resultado — se reintenta en la próxima corrida
-
-        await supabase.from('aguante_elecciones').update({ resultado: resultadoEquipo }).eq('id', eleccion.id);
-        if (resultadoEquipo === 'muerto') {
-          const vidasNuevas = p.vidas_restantes - 1;
-          await supabase
-            .from('aguante_participantes')
-            .update({ vidas_restantes: vidasNuevas, eliminado: vidasNuevas <= 0, fecha_eliminacion: vidasNuevas <= 0 ? new Date().toISOString() : null })
-            .eq('id', p.id);
-        }
-        procesados++;
+      const porSemana = [];
+      for (const semanaObjetivo of semanasAProcesar) {
+        const r = await resolverSemanaAguante(grupo, semanaObjetivo);
+        porSemana.push({ semana: semanaObjetivo, ...r });
       }
 
-      resultado.grupos.push({ sala_id: grupo.id, nombre: grupo.nombre, procesados, sinResolverTodavia });
+      // Después de intentar resolver todas las semanas pedidas, revisa si
+      // el grupo ya quedó con un solo jugador en pie — si es así, premia
+      // (una sola vez, ver otorgarMedallaAguanteSiTermino).
+      try {
+        await otorgarMedallaAguanteSiTermino(grupo, semanasAProcesar[0]);
+      } catch (eMedalla) {
+        console.error('[aguante-resolver] Error otorgando medalla de campeón:', eMedalla.message);
+      }
+
+      resultado.grupos.push({ sala_id: grupo.id, nombre: grupo.nombre, porSemana });
     }
 
     res.json(resultado);
