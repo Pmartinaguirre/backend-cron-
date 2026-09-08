@@ -389,10 +389,25 @@ async function rutaGanadorSemanal(req, res) {
       // Miembros que YA estaban en el grupo antes de que cerrara la semana
       // (fecha_union <= fin de la semana) — si alguien entró a mitad o
       // después, esa semana no le cuenta para el premio en este grupo.
-      const { data: miembros } = await supabase
+      const { data: miembrosData } = await supabase
         .from('salas_privadas_miembros_mvp')
         .select('usuario_id, fecha_union')
         .eq('sala_id', grupo.id);
+      // FIX (a pedido, bug reportado: "le dio la medalla a Vitomaster y
+      // Edgol pero no a mí [Martin10, admin del grupo]" — el admin de un
+      // grupo NO siempre tiene su propia fila en
+      // salas_privadas_miembros_mvp (mismo caso ya resuelto en
+      // rankingGrupo.js/rankingGrupoHistorial.js: "el admin cuenta como
+      // miembro aunque no tenga fila propia"), así que acá se quedaba
+      // afuera de idsElegibles por completo — sus diamantes SÍ se
+      // calculaban bien en la tabla de posiciones (rankingGrupo.js, que sí
+      // agrega al admin), pero nunca entraba a la carrera por la medalla
+      // semanal en este archivo. Se agrega acá con el mismo criterio:
+      // fecha_union null (siempre elegible).
+      const miembros = [...(miembrosData || [])];
+      if (grupo.admin_id && !miembros.some((m) => m.usuario_id === grupo.admin_id)) {
+        miembros.push({ usuario_id: grupo.admin_id, fecha_union: null });
+      }
       const idsElegibles = (miembros || [])
         .filter((m) => !m.fecha_union || new Date(m.fecha_union).getTime() < fin)
         .map((m) => m.usuario_id);
