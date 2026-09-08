@@ -176,6 +176,14 @@ async function rutaAguanteEstado(req, res) {
       empezado: d.fecha_expiracion ? new Date(d.fecha_expiracion).getTime() <= Date.now() : false,
       resuelto: d.goles_local_oficial != null && d.goles_visitante_oficial != null,
     }));
+    // "apuestasCerradas" (a pedido: "se cierran las apuestas cuando parte
+    // el primer partido de la semana, no por cada partido") — cierre ÚNICO
+    // para toda la fecha, no por equipo: apenas arranca el primero de todos
+    // los partidos de esta ronda, nadie puede elegir/cambiar más, aunque su
+    // equipo puntual todavía no haya jugado.
+    const kickoffsSemana = partidosSemana.map((p) => (p.fechaExpiracion ? new Date(p.fechaExpiracion).getTime() : null)).filter((t) => Number.isFinite(t));
+    const primerKickoffSemana = kickoffsSemana.length > 0 ? Math.min(...kickoffsSemana) : null;
+    const apuestasCerradas = primerKickoffSemana !== null && primerKickoffSemana <= Date.now();
 
     // La semana "en juego" para elegir es la actual — la anterior ya cerró
     // y se resuelve con /aguante-resolver.
@@ -184,6 +192,47 @@ async function rutaAguanteEstado(req, res) {
       if (!equiposUsadosPorUsuario[e.usuario_id]) equiposUsadosPorUsuario[e.usuario_id] = [];
       equiposUsadosPorUsuario[e.usuario_id].push(e.equipo);
     });
+
+    // Detalle de "equipos ya usados" (a pedido: "cuando pongas los equipos
+    // ya usados, agrega al lado de ese equipo usado la fecha (ej fecha 37),
+    // el resultado del partido y si pasó o perdió vida por cada fecha") —
+    // solo se arma para el jugador que está pidiendo su propio estado
+    // (usuarioId), cruzando cada elección YA CERRADA (no la de la semana en
+    // curso, esa todavía no tiene partido jugado) contra el partido real de
+    // ese equipo en esa semana, para sacar el marcador.
+    let miEquiposUsadosDetalle = [];
+    if (usuarioId) {
+      const misElecciones = (elecciones || []).filter((e) => e.usuario_id === usuarioId && e.numero_semana < semanaActual);
+      if (misElecciones.length > 0) {
+        const semanasUnicas = [...new Set(misElecciones.map((e) => e.numero_semana))];
+        const rangos = semanasUnicas.map((n) => ({ n, ...rangoDeSemana(n) }));
+        const inicioMin = Math.min(...rangos.map((r) => r.inicio));
+        const finMax = Math.max(...rangos.map((r) => r.fin));
+        const { data: partidosHistoricos } = await supabase
+          .from('desafios_mvp')
+          .select('equipo_local, equipo_visitante, fecha_expiracion, goles_local_oficial, goles_visitante_oficial')
+          .eq('tema', sala.aguante_competencia)
+          .gte('fecha_expiracion', new Date(inicioMin).toISOString())
+          .lt('fecha_expiracion', new Date(finMax).toISOString());
+        miEquiposUsadosDetalle = misElecciones.map((e) => {
+          const rango = rangos.find((r) => r.n === e.numero_semana);
+          const partido = (partidosHistoricos || []).find((d) => {
+            if (d.equipo_local !== e.equipo && d.equipo_visitante !== e.equipo) return false;
+            const t = new Date(d.fecha_expiracion).getTime();
+            return rango && t >= rango.inicio && t < rango.fin;
+          }) || null;
+          const marcador = partido && partido.goles_local_oficial != null && partido.goles_visitante_oficial != null
+            ? `${partido.equipo_local} ${partido.goles_local_oficial}-${partido.goles_visitante_oficial} ${partido.equipo_visitante}`
+            : null;
+          return {
+            equipo: e.equipo,
+            numeroSemana: e.numero_semana,
+            resultado: e.resultado, // 'pendiente' | 'vivo' | 'muerto'
+            marcador,
+          };
+        }).sort((a, b) => b.numeroSemana - a.numeroSemana);
+      }
+    }
 
     const jugadores = (participantes || []).map((p) => ({
       usuarioId: p.usuario_id,
@@ -207,10 +256,12 @@ async function rutaAguanteEstado(req, res) {
       competencia: sala.aguante_competencia,
       numeroSemana: semanaActual,
       partidosSemana,
+      apuestasCerradas,
       jugadores,
       juegoTerminado,
       ganadores: juegoTerminado ? vivos.map((j) => j.usuarioId) : [],
       miEquiposUsados: usuarioId ? (equiposUsadosPorUsuario[usuarioId] || []) : [],
+      miEquiposUsadosDetalle,
       miEleccionSemanaActual: miEleccion ? miEleccion.equipo : null,
     });
   } catch (e) {
@@ -292,11 +343,14 @@ async function rutaAguanteElegir(req, res) {
     const semanaActual = numeroSemanaDe(Date.now());
     const { inicio, fin } = rangoDeSemana(semanaActual);
 
-    // Plazo: no se puede elegir (ni cambiar la elección) una vez que
-    // arrancó el partido de ESE equipo en esta ventana — mismo criterio
-    // que el resto de la app usa para cerrar pronósticos. Se busca solo
-    // dentro de los partidos de la RONDA VIGENTE (no cualquier partido
-    // reprogramado que caiga en la misma semana).
+    // Plazo (a pedido: "se cierran las apuestas cuando parte el PRIMER
+    // partido de la semana, no por cada partido" — antes esto se fijaba
+    // mirando solo el partido del equipo elegido, así que un jugador podía
+    // seguir eligiendo (o cambiando de equipo) después de que ya habían
+    // arrancado otros partidos de la misma fecha, con la ventaja de ya
+    // saber esos resultados). Ahora el cierre es UNO SOLO para toda la
+    // ronda: el kickoff más temprano entre TODOS los partidos de la fecha
+    // vigente, sin importar el equipo que se esté por elegir.
     const partidosRonda = await partidosDeLaRondaVigente(sala.aguante_competencia, inicio, fin);
     const partidoDeEseEquipo = partidosRonda.find((p) => p.equipo_local === equipo || p.equipo_visitante === equipo) || null;
     // El equipo tiene que jugar ESTA semana — no tendría sentido "elegir" un
@@ -304,8 +358,10 @@ async function rutaAguanteElegir(req, res) {
     if (!partidoDeEseEquipo) {
       return res.status(400).json({ error: `${equipo} no tiene partido esta semana en ${sala.aguante_competencia}.` });
     }
-    if (new Date(partidoDeEseEquipo.fecha_expiracion).getTime() <= Date.now()) {
-      return res.status(400).json({ error: `El partido de ${equipo} esta semana ya empezó — no se puede elegir.` });
+    const kickoffsRonda = partidosRonda.map((p) => new Date(p.fecha_expiracion).getTime()).filter(Number.isFinite);
+    const primerKickoffRonda = kickoffsRonda.length > 0 ? Math.min(...kickoffsRonda) : null;
+    if (primerKickoffRonda !== null && primerKickoffRonda <= Date.now()) {
+      return res.status(400).json({ error: 'Ya arrancó el primer partido de esta fecha — se cerraron las apuestas de la semana.' });
     }
 
     // Upsert: si ya había elegido otro equipo esta semana (antes de que
