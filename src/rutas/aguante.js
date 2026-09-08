@@ -569,4 +569,53 @@ async function rutaAguanteResolver(req, res) {
   }
 }
 
-module.exports = { rutaAguanteEstado, rutaAguanteElegir, rutaAguanteResolver };
+// ============================================================
+// POST /aguante-reiniciar  { sala_id, usuario_id }  (usuario_id = admin)
+// ============================================================
+// A pedido: "¿cómo hago para resetear de un grupo el aguante y comenzar
+// nuevamente el juego? Me sale terminado y no puedo volver a jugar" — El
+// Aguante no tenía NINGÚN botón de reinicio (el "Reiniciar los puntajes
+// del grupo" de MisGrupos.jsx solo toca Polla — fecha_inicio_conteo — y ni
+// siquiera lo intenta con Aguante, que no usa diamantes). Borra TODAS las
+// filas de aguante_participantes y aguante_elecciones de este grupo: al
+// volver a entrar a /aguante-estado, el autocompletado de siempre (ver
+// rutaAguanteEstado más arriba) le crea una fila nueva a cada miembro con
+// 2 vidas, como si el juego arrancara de cero. Solo el admin del grupo
+// puede pedirlo, mismo criterio de autorización que el resto de rutas
+// admin de este archivo/proyecto (sin X-Cron-Secret, se verifica adentro).
+async function rutaAguanteReiniciar(req, res) {
+  const { sala_id, usuario_id } = req.body || {};
+  if (!sala_id || !usuario_id) {
+    return res.status(400).json({ error: 'Faltan sala_id o usuario_id.' });
+  }
+  try {
+    const { data: sala, error: errSala } = await supabase
+      .from('salas_privadas_mvp')
+      .select('id, admin_id, juega_aguante')
+      .eq('id', sala_id)
+      .single();
+    if (errSala || !sala) return res.status(404).json({ error: 'Grupo no encontrado.' });
+    if (String(sala.admin_id) !== String(usuario_id)) {
+      return res.status(403).json({ error: 'Solo el admin del grupo puede reiniciar El Aguante.' });
+    }
+
+    const { error: errBorrarElecciones } = await supabase
+      .from('aguante_elecciones')
+      .delete()
+      .eq('sala_id', sala_id);
+    if (errBorrarElecciones) return res.status(500).json({ error: errBorrarElecciones.message });
+
+    const { error: errBorrarParticipantes } = await supabase
+      .from('aguante_participantes')
+      .delete()
+      .eq('sala_id', sala_id);
+    if (errBorrarParticipantes) return res.status(500).json({ error: errBorrarParticipantes.message });
+
+    res.json({ ok: true, sala_id });
+  } catch (e) {
+    console.error('[aguante-reiniciar] Error:', e);
+    res.status(500).json({ error: e.message });
+  }
+}
+
+module.exports = { rutaAguanteEstado, rutaAguanteElegir, rutaAguanteResolver, rutaAguanteReiniciar };

@@ -30,7 +30,7 @@ const { rutaGanadorSemanal } = require('./src/rutas/ganadorSemanal');
 const { rutaRankingGrupo } = require('./src/rutas/rankingGrupo');
 const { rutaRankingGrupoHistorial } = require('./src/rutas/rankingGrupoHistorial');
 const { rutaRefrescarPlanteles } = require('./src/rutas/refrescarPlanteles');
-const { rutaAguanteEstado, rutaAguanteElegir, rutaAguanteResolver } = require('./src/rutas/aguante');
+const { rutaAguanteEstado, rutaAguanteElegir, rutaAguanteResolver, rutaAguanteReiniciar } = require('./src/rutas/aguante');
 const { rutaBabyEstado, rutaBabyElegir, rutaBabyResolver } = require('./src/rutas/baby');
 const { rutaListarProductosPublico, rutaListarProductosAdmin, rutaGuardarProductoAdmin } = require('./src/rutas/fanMarketProductos');
 const { rutaObtenerPremios, rutaGuardarPremios, rutaConfirmarPremios, rutaMarcarPagado } = require('./src/rutas/grupoPremios');
@@ -307,6 +307,12 @@ app.post('/aguante-elegir', permitirCorsInvitar, rutaAguanteElegir);
 // escribe en la base, así que lleva X-Cron-Secret.
 app.get('/aguante-resolver', exigirSecreto, rutaAguanteResolver);
 app.post('/aguante-resolver', exigirSecreto, rutaAguanteResolver);
+// /aguante-reiniciar: acción de admin desde la app (a pedido: "cómo hago
+// para resetear de un grupo el aguante y comenzar nuevamente el juego").
+// Mismo criterio de CORS/secreto que /aguante-elegir — sin X-Cron-Secret,
+// la autorización (solo el admin del grupo) se verifica adentro de la ruta.
+app.options('/aguante-reiniciar', permitirCorsInvitar, (req, res) => res.sendStatus(204));
+app.post('/aguante-reiniciar', permitirCorsInvitar, rutaAguanteReiniciar);
 
 // "Baby" (a pedido, cambio "LETALES"): modo de juego GLOBAL — adivinar el
 // ganador (no marcador exacto) de 5 partidos elegidos por el admin cada
