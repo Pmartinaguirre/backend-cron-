@@ -226,7 +226,23 @@ async function rutaCuotas(req, res) {
     .filter((p) => !faltaEstadio(p))
     .sort((a, b) => horario(a) - horario(b));
 
-  let partidos = urgentes.slice(0, MAX_PARTIDOS_POR_CORRIDA);
+  // CUPO MÍNIMO GARANTIZADO para no-urgentes (a pedido, bug real: "hay
+  // partidos que son el sábado y domingo próximo... todavía no trae las
+  // cuotas... dice que hay pendientes 70 en la próxima corrida pero no trae
+  // más cuotas que las que hay"). Causa: el grupo "urgentes" (próximas 48h)
+  // no tenía tope propio — se comía TODO el cupo de la corrida si él solo ya
+  // superaba MAX_PARTIDOS_POR_CORRIDA, algo que pasa fácil justo cuando
+  // arranca una fecha de Champions/Libertadores/Sudamericana (17+ partidos
+  // cayendo juntos dentro de 48h en este caso puntual). Mientras el backlog
+  // de urgentes se mantenga arriba del cupo total, los partidos del
+  // fin de semana (a 4+ días, fuera de la ventana urgente) quedaban con
+  // cupo CERO corrida tras corrida, sin avanzar nunca. Ahora los urgentes
+  // siguen yendo primero, pero como máximo se llevan
+  // (MAX_PARTIDOS_POR_CORRIDA - CUPO_MINIMO_NO_URGENTE) lugares — el resto
+  // del cupo se reserva siempre para partidos más lejanos, así el backlog de
+  // fin de semana avanza aunque haya un aluvión de partidos urgentes.
+  const CUPO_MINIMO_NO_URGENTE = 3;
+  let partidos = urgentes.slice(0, Math.max(0, MAX_PARTIDOS_POR_CORRIDA - CUPO_MINIMO_NO_URGENTE));
   const cupoRestante = MAX_PARTIDOS_POR_CORRIDA - partidos.length;
   if (cupoRestante > 0) {
     const cupoEstadio = Math.ceil(cupoRestante / 2);
