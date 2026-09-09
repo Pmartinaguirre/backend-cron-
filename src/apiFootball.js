@@ -87,6 +87,18 @@ async function obtenerCuotas(fixtureId) {
       comparativa: Object.keys(comparativa).length > 0 ? comparativa : null,
     };
   }
+  // Distinto de "sin bookmakers" (log de arriba): acá SÍ hay casas de
+  // apuestas cargadas para el fixture, pero NINGUNA tiene las 3 cuotas
+  // completas (Local/Empate/Visita) todavía del mercado "Match Winner" — a
+  // pedido (caso real: partidos a 4-5 días de ligas de menor interés,
+  // ej. Chile, mitad de tabla de Premier/Serie A, quedaban "sin cuota
+  // todavía" corrida tras corrida y no había forma de distinguir esto de un
+  // error real de la API con solo mirar el resultado de /cuotas). Es
+  // normal: las casas suelen publicar el mercado completo más cerca de la
+  // fecha del partido — no es un bug, se resuelve solo con el tiempo.
+  if (!hayError && bookmakers.length > 0) {
+    console.log(`[obtenerCuotas] Fixture ${fixtureId}: hay ${bookmakers.length} casa(s) (${bookmakers.map((b) => b.name).join(', ')}) pero ninguna tiene Match Winner completo todavía.`);
+  }
   return null; // todavía no hay cuotas cargadas para este fixture
 }
 
