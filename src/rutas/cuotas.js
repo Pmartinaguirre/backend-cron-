@@ -18,7 +18,21 @@
 const DIAS_VENTANA_CUOTAS = Number(process.env.DIAS_VENTANA_CUOTAS) || 10;
 
 const { supabase } = require('../supabaseClient');
-const { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerDatosVenuePorNombre } = require('../apiFootball');
+const { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerDatosVenuePorNombre, obtenerVenueDeEquipo } = require('../apiFootball');
+
+// Cache en memoria de "ciudad del estadio HABITUAL de cada equipo" (a pedido,
+// ver validación local/visitante más abajo) — vive solo durante ESTA
+// corrida del cron, para no pedir 2 veces el mismo equipo si juega varios
+// partidos en la misma tanda (ej. ida Y vuelta del mismo cruce).
+const cacheCiudadEquipo = new Map();
+async function ciudadHabitualDeEquipo(teamId) {
+  if (!teamId) return null;
+  if (cacheCiudadEquipo.has(teamId)) return cacheCiudadEquipo.get(teamId);
+  const venue = await obtenerVenueDeEquipo(teamId);
+  const ciudad = venue?.ciudad || null;
+  cacheCiudadEquipo.set(teamId, ciudad);
+  return ciudad;
+}
 
 // HORARIOS "TBD" SIN CONFIRMAR (a pedido, bug reportado: Libertadores del
 // 11 y 18 de agosto ya tenían horario publicado en API-Football y la app
@@ -49,7 +63,7 @@ async function rutaCuotas(req, res) {
   const limiteTBD = new Date(ahora);
   limiteTBD.setDate(limiteTBD.getDate() + DIAS_VENTANA_TBD);
 
-  const columnas = 'id, pregunta, fixture_id_api, categoria, fecha_expiracion, estado_partido, cuota_local, cuotas_comparativa, cuota_refrescada_urgente, estadio, estadio_ciudad, estadio_pais, estadio_capacidad, estadio_cesped, estadio_venue_id, estadio_imagen, arbitro, arbitro_pais, equipo_local_id, info_partido_corregida, equipo_local, equipo_visitante, goles_local_oficial, goles_visitante_oficial, resultado_oficial, equipos_local_visita_validado';
+  const columnas = 'id, pregunta, fixture_id_api, categoria, fecha_expiracion, estado_partido, cuota_local, cuotas_comparativa, cuota_refrescada_urgente, estadio, estadio_ciudad, estadio_pais, estadio_capacidad, estadio_cesped, estadio_venue_id, estadio_imagen, arbitro, arbitro_pais, equipo_local_id, equipo_visita_id, info_partido_corregida, equipo_local, equipo_visitante, goles_local_oficial, goles_visitante_oficial, resultado_oficial, equipos_local_visita_validado';
 
   // Estadio + árbitro (a pedido, "Información del partido" en la app): se
   // traen JUNTO con las cuotas, en la misma corrida — mismo criterio que
@@ -322,6 +336,39 @@ async function rutaCuotas(req, res) {
             console.error(`[/cuotas] ¡CORREGIDO! Partido ${partido.id} tenía local/visitante invertidos: "${partido.equipo_local}" (guardado) vs "${info.equipoLocalApi}" (API-Football) — ahora local=${info.equipoLocalApi}, visita=${info.equipoVisitaApi}.`);
             resultado.equiposInvertidosCorregidos = (resultado.equiposInvertidosCorregidos || []);
             resultado.equiposInvertidosCorregidos.push({ id: partido.id, antes: `${partido.equipo_local} vs ${partido.equipo_visitante}`, ahora: `${info.equipoLocalApi} vs ${info.equipoVisitaApi}` });
+          } else if (info.estadioCiudad && partido.equipo_local_id && partido.equipo_visita_id) {
+            // SEGUNDO CHEQUEO, por estadio (a pedido, caso real: Santos vs
+            // Atlético Mineiro en Copa Sudamericana — API-Football devolvía
+            // teams.home="Santos" pero el estadio del fixture era el de
+            // Atlético-MG en Belo Horizonte. Ahí el chequeo de arriba (contra
+            // teams.home/away) NO alcanza porque el dato mal cargado está
+            // adentro de la propia respuesta de la API, no solo desactualizado
+            // en nuestra base. Este segundo chequeo cruza el estadio REAL del
+            // fixture contra el estadio HABITUAL de cada equipo (ficha del
+            // club en API-Football, /teams?id=): si el partido se juega en la
+            // ciudad del "visitante" guardado y NO en la del "local" guardado,
+            // es señal fuerte de que están invertidos igual, aunque
+            // teams.home/away de la API diga lo mismo que nosotros.
+            const ciudadFixture = info.estadioCiudad.trim().toLowerCase();
+            const [ciudadLocal, ciudadVisita] = await Promise.all([
+              ciudadHabitualDeEquipo(partido.equipo_local_id),
+              ciudadHabitualDeEquipo(partido.equipo_visita_id),
+            ]);
+            const ciudadLocalNorm = (ciudadLocal || '').trim().toLowerCase();
+            const ciudadVisitaNorm = (ciudadVisita || '').trim().toLowerCase();
+            const pareceInvertidoPorEstadio = ciudadVisitaNorm && ciudadFixture === ciudadVisitaNorm
+              && ciudadLocalNorm && ciudadFixture !== ciudadLocalNorm;
+            if (pareceInvertidoPorEstadio) {
+              payload.equipo_local = partido.equipo_visitante;
+              payload.equipo_visitante = partido.equipo_local;
+              if (partido.goles_local_oficial != null || partido.goles_visitante_oficial != null) {
+                payload.goles_local_oficial = partido.goles_visitante_oficial;
+                payload.goles_visitante_oficial = partido.goles_local_oficial;
+              }
+              console.error(`[/cuotas] ¡CORREGIDO POR ESTADIO! Partido ${partido.id}: "${partido.equipo_local}" figuraba de local pero el partido se juega en ${info.estadioCiudad} (ciudad de "${partido.equipo_visitante}"), no en la ciudad habitual de "${partido.equipo_local}" (${ciudadLocal || 'desconocida'}) — ahora local=${partido.equipo_visitante}, visita=${partido.equipo_local}. API-Football también tenía esto invertido en su propia respuesta de teams.home/away.`);
+              resultado.equiposInvertidosCorregidos = (resultado.equiposInvertidosCorregidos || []);
+              resultado.equiposInvertidosCorregidos.push({ id: partido.id, origen: 'estadio', antes: `${partido.equipo_local} vs ${partido.equipo_visitante}`, ahora: `${partido.equipo_visitante} vs ${partido.equipo_local}` });
+            }
           }
         }
         if (info?.estadioNombre != null) payload.estadio = info.estadioNombre;
