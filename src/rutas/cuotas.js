@@ -18,21 +18,21 @@
 const DIAS_VENTANA_CUOTAS = Number(process.env.DIAS_VENTANA_CUOTAS) || 10;
 
 const { supabase } = require('../supabaseClient');
-const { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerDatosVenuePorNombre, obtenerVenueDeEquipo } = require('../apiFootball');
+const { obtenerCuotas, obtenerEstadoFixture, obtenerDatosVenue, obtenerDatosVenuePorNombre } = require('../apiFootball');
 
-// Cache en memoria de "ciudad del estadio HABITUAL de cada equipo" (a pedido,
-// ver validación local/visitante más abajo) — vive solo durante ESTA
-// corrida del cron, para no pedir 2 veces el mismo equipo si juega varios
-// partidos en la misma tanda (ej. ida Y vuelta del mismo cruce).
-const cacheCiudadEquipo = new Map();
-async function ciudadHabitualDeEquipo(teamId) {
-  if (!teamId) return null;
-  if (cacheCiudadEquipo.has(teamId)) return cacheCiudadEquipo.get(teamId);
-  const venue = await obtenerVenueDeEquipo(teamId);
-  const ciudad = venue?.ciudad || null;
-  cacheCiudadEquipo.set(teamId, ciudad);
-  return ciudad;
-}
+// VALIDACIÓN LOCAL/VISITANTE — SOLO contra teams.home/away de API-Football,
+// NUNCA por estadio (a pedido, corrección real de Pablo: hubo un caso —
+// Santos vs Atlético-MG — donde teams.home SÍ decía bien "Santos" para la
+// ida, pero el campo de estadio de esa consulta puntual venía con la cancha
+// de Atlético-MG. Cruzar por estadio ahí habría invertido un partido que en
+// realidad estaba BIEN. El campo de venue puede venir mal aunque
+// teams.home/away esté correcto — así que el único criterio de verdad acá es
+// teams.home/away, tal como lo pidió Pablo: "límitate a lo que trae la
+// api"). Se re-valida CADA CIERTOS DÍAS (no una sola vez) porque API-Football
+// puede tardar en corregir sus propios datos, y los jugadores empiezan a
+// pronosticar mucho antes de que arranque el partido — no alcanza con
+// validar una vez cerca del partido y quedarse tranquilo.
+const DIAS_REVALIDAR_EQUIPOS = 2;
 
 // HORARIOS "TBD" SIN CONFIRMAR (a pedido, bug reportado: Libertadores del
 // 11 y 18 de agosto ya tenían horario publicado en API-Football y la app
@@ -63,7 +63,9 @@ async function rutaCuotas(req, res) {
   const limiteTBD = new Date(ahora);
   limiteTBD.setDate(limiteTBD.getDate() + DIAS_VENTANA_TBD);
 
-  const columnas = 'id, pregunta, fixture_id_api, categoria, fecha_expiracion, estado_partido, cuota_local, cuotas_comparativa, cuota_refrescada_urgente, estadio, estadio_ciudad, estadio_pais, estadio_capacidad, estadio_cesped, estadio_venue_id, estadio_imagen, arbitro, arbitro_pais, equipo_local_id, equipo_visita_id, info_partido_corregida, equipo_local, equipo_visitante, goles_local_oficial, goles_visitante_oficial, resultado_oficial, equipos_local_visita_validado';
+  const columnas = 'id, pregunta, fixture_id_api, categoria, fecha_expiracion, estado_partido, cuota_local, cuotas_comparativa, cuota_refrescada_urgente, estadio, estadio_ciudad, estadio_pais, estadio_capacidad, estadio_cesped, estadio_venue_id, estadio_imagen, arbitro, arbitro_pais, equipo_local_id, equipo_visita_id, info_partido_corregida, equipo_local, equipo_visitante, goles_local_oficial, goles_visitante_oficial, resultado_oficial, equipos_local_visita_ultima_validacion';
+  const fechaLimiteRevalidar = new Date(ahora);
+  fechaLimiteRevalidar.setDate(fechaLimiteRevalidar.getDate() - DIAS_REVALIDAR_EQUIPOS);
 
   // Estadio + árbitro (a pedido, "Información del partido" en la app): se
   // traen JUNTO con las cuotas, en la misma corrida — mismo criterio que
@@ -90,14 +92,17 @@ async function rutaCuotas(req, res) {
     // partido que YA tiene cuota_local/cuotas_comparativa completos jamás
     // volvía a entrar acá, así que nunca llegaba a la ventana urgente (ver
     // más abajo) para refrescarse una vez antes de arrancar.
-    // equipos_local_visita_validado.is.null agregado a pedido (bug real:
-    // Fluminense-Platense y Palmeiras-LDU de Quito en Copa Libertadores
-    // quedaron con local/visitante invertidos — API-Football tenía mal
-    // asignada la sede al crear el partido y lo corrigió después, pero
-    // nuestra base se quedó con el dato viejo para siempre). Mismo criterio
-    // que cuota_refrescada_urgente: se valida UNA vez contra la API antes
-    // del partido, no se vuelve a pedir después de validado.
-    .or('cuota_local.is.null,cuotas_comparativa.is.null,cuota_refrescada_urgente.is.null,estadio.is.null,arbitro.is.null,estadio_capacidad.is.null,estadio_imagen.is.null,equipos_local_visita_validado.is.null')
+    // equipos_local_visita_ultima_validacion agregado a pedido (bug real:
+    // Fluminense-Platense, Palmeiras-LDU, Cienciano-Atlético Torque en Copa
+    // Libertadores/Sudamericana quedaron con local/visitante invertidos).
+    // A DIFERENCIA de cuota_refrescada_urgente (una sola vez), esto se
+    // RE-VALIDA cada DIAS_REVALIDAR_EQUIPOS días mientras el partido no
+    // arrancó — a pedido explícito de Pablo: "no podemos esperar a que
+    // arranque el partido para validar esa info, los jugadores van a
+    // ingresar los pronósticos con los equipos mal configurados". Si
+    // API-Football tarda unos días en corregir un dato mal cargado, no
+    // alcanza con chequear una sola vez y quedarse tranquilo.
+    .or(`cuota_local.is.null,cuotas_comparativa.is.null,cuota_refrescada_urgente.is.null,estadio.is.null,arbitro.is.null,estadio_capacidad.is.null,estadio_imagen.is.null,equipos_local_visita_ultima_validacion.is.null,equipos_local_visita_ultima_validacion.lt.${fechaLimiteRevalidar.toISOString()}`)
     .gte('fecha_expiracion', ahora.toISOString())
     .lte('fecha_expiracion', limite.toISOString())
     // Los partidos que juegan más pronto primero (a pedido, junto con el
@@ -299,21 +304,26 @@ async function rutaCuotas(req, res) {
       // chequeo, la corrección manual duraría hasta la próxima corrida,
       // que la volvería a sobrescribir con el dato (posiblemente
       // equivocado, o simplemente inexistente) de API-Football.
-      // VALIDACIÓN LOCAL/VISITANTE (a pedido, bug real: Fluminense-Platense y
-      // Palmeiras-LDU de Quito en Copa Libertadores quedaron con los equipos
-      // invertidos). Antes nadie volvía a chequear equipo_local/visitante
-      // después de crear el partido — se confiaba para siempre en el dato
-      // del día de creación, aunque API-Football después corrigiera de su
-      // lado a quién le tocaba de local (pasa con partidos de ida/vuelta de
-      // Libertadores/Sudamericana antes de confirmarse sede). Se valida UNA
-      // vez por partido (equipos_local_visita_validado), reusando la MISMA
-      // llamada a /fixtures?id= que ya se pedía para estadio/árbitro — no es
-      // consumo extra de API-Football.
-      const necesitaValidarEquipos = !partido.resultado_oficial && !partido.equipos_local_visita_validado;
+      // VALIDACIÓN LOCAL/VISITANTE (a pedido, bug real: Fluminense-Platense,
+      // Palmeiras-LDU y Cienciano-Atlético Torque en Copa Libertadores/
+      // Sudamericana quedaron con los equipos invertidos). Antes nadie
+      // volvía a chequear equipo_local/visitante después de crear el
+      // partido. ÚNICO criterio de verdad: teams.home/away de API-Football
+      // (a pedido explícito de Pablo, tras un falso positivo con el
+      // estadio: "no saques conclusiones sin saber, limítate a lo que trae
+      // la api" — el campo de estadio puede venir mal aunque teams.home/away
+      // esté bien, así que NO se cruza contra estadio habitual del equipo).
+      // Se re-valida cada DIAS_REVALIDAR_EQUIPOS días (no una sola vez):
+      // "no podemos esperar a que arranque el partido para validar esa
+      // info... esto es grave" — si la API tarda unos días en corregir un
+      // dato mal cargado, hay que seguir chequeando hasta que el partido
+      // arranque, no conformarse con un solo chequeo temprano.
+      const necesitaValidarEquipos = !partido.resultado_oficial
+        && (!partido.equipos_local_visita_ultima_validacion || new Date(partido.equipos_local_visita_ultima_validacion) < fechaLimiteRevalidar);
       if (!partido.info_partido_corregida && (partido.estadio == null || partido.arbitro == null || partido.estadio_capacidad == null || partido.estadio_imagen == null || partido.estado_partido === 'TBD' || necesitaValidarEquipos)) {
         const info = await obtenerEstadoFixture(partido.fixture_id_api);
         if (necesitaValidarEquipos && info) {
-          payload.equipos_local_visita_validado = true;
+          payload.equipos_local_visita_ultima_validacion = new Date().toISOString();
           const localApiNorm = (info.equipoLocalApi || '').trim().toLowerCase();
           const localGuardadoNorm = (partido.equipo_local || '').trim().toLowerCase();
           const visitaApiNorm = (info.equipoVisitaApi || '').trim().toLowerCase();
@@ -336,39 +346,6 @@ async function rutaCuotas(req, res) {
             console.error(`[/cuotas] ¡CORREGIDO! Partido ${partido.id} tenía local/visitante invertidos: "${partido.equipo_local}" (guardado) vs "${info.equipoLocalApi}" (API-Football) — ahora local=${info.equipoLocalApi}, visita=${info.equipoVisitaApi}.`);
             resultado.equiposInvertidosCorregidos = (resultado.equiposInvertidosCorregidos || []);
             resultado.equiposInvertidosCorregidos.push({ id: partido.id, antes: `${partido.equipo_local} vs ${partido.equipo_visitante}`, ahora: `${info.equipoLocalApi} vs ${info.equipoVisitaApi}` });
-          } else if (info.estadioCiudad && partido.equipo_local_id && partido.equipo_visita_id) {
-            // SEGUNDO CHEQUEO, por estadio (a pedido, caso real: Santos vs
-            // Atlético Mineiro en Copa Sudamericana — API-Football devolvía
-            // teams.home="Santos" pero el estadio del fixture era el de
-            // Atlético-MG en Belo Horizonte. Ahí el chequeo de arriba (contra
-            // teams.home/away) NO alcanza porque el dato mal cargado está
-            // adentro de la propia respuesta de la API, no solo desactualizado
-            // en nuestra base. Este segundo chequeo cruza el estadio REAL del
-            // fixture contra el estadio HABITUAL de cada equipo (ficha del
-            // club en API-Football, /teams?id=): si el partido se juega en la
-            // ciudad del "visitante" guardado y NO en la del "local" guardado,
-            // es señal fuerte de que están invertidos igual, aunque
-            // teams.home/away de la API diga lo mismo que nosotros.
-            const ciudadFixture = info.estadioCiudad.trim().toLowerCase();
-            const [ciudadLocal, ciudadVisita] = await Promise.all([
-              ciudadHabitualDeEquipo(partido.equipo_local_id),
-              ciudadHabitualDeEquipo(partido.equipo_visita_id),
-            ]);
-            const ciudadLocalNorm = (ciudadLocal || '').trim().toLowerCase();
-            const ciudadVisitaNorm = (ciudadVisita || '').trim().toLowerCase();
-            const pareceInvertidoPorEstadio = ciudadVisitaNorm && ciudadFixture === ciudadVisitaNorm
-              && ciudadLocalNorm && ciudadFixture !== ciudadLocalNorm;
-            if (pareceInvertidoPorEstadio) {
-              payload.equipo_local = partido.equipo_visitante;
-              payload.equipo_visitante = partido.equipo_local;
-              if (partido.goles_local_oficial != null || partido.goles_visitante_oficial != null) {
-                payload.goles_local_oficial = partido.goles_visitante_oficial;
-                payload.goles_visitante_oficial = partido.goles_local_oficial;
-              }
-              console.error(`[/cuotas] ¡CORREGIDO POR ESTADIO! Partido ${partido.id}: "${partido.equipo_local}" figuraba de local pero el partido se juega en ${info.estadioCiudad} (ciudad de "${partido.equipo_visitante}"), no en la ciudad habitual de "${partido.equipo_local}" (${ciudadLocal || 'desconocida'}) — ahora local=${partido.equipo_visitante}, visita=${partido.equipo_local}. API-Football también tenía esto invertido en su propia respuesta de teams.home/away.`);
-              resultado.equiposInvertidosCorregidos = (resultado.equiposInvertidosCorregidos || []);
-              resultado.equiposInvertidosCorregidos.push({ id: partido.id, origen: 'estadio', antes: `${partido.equipo_local} vs ${partido.equipo_visitante}`, ahora: `${partido.equipo_visitante} vs ${partido.equipo_local}` });
-            }
           }
         }
         if (info?.estadioNombre != null) payload.estadio = info.estadioNombre;
