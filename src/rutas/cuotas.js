@@ -63,9 +63,23 @@ async function rutaCuotas(req, res) {
   const limiteTBD = new Date(ahora);
   limiteTBD.setDate(limiteTBD.getDate() + DIAS_VENTANA_TBD);
 
-  const columnas = 'id, pregunta, fixture_id_api, categoria, fecha_expiracion, estado_partido, cuota_local, cuotas_comparativa, cuota_refrescada_urgente, estadio, estadio_ciudad, estadio_pais, estadio_capacidad, estadio_cesped, estadio_venue_id, estadio_imagen, arbitro, arbitro_pais, equipo_local_id, equipo_visita_id, info_partido_corregida, equipo_local, equipo_visitante, goles_local_oficial, goles_visitante_oficial, resultado_oficial, equipos_local_visita_ultima_validacion';
+  const columnas = 'id, pregunta, fixture_id_api, categoria, tema, fecha_expiracion, estado_partido, cuota_local, cuotas_comparativa, cuota_refrescada_urgente, estadio, estadio_ciudad, estadio_pais, estadio_capacidad, estadio_cesped, estadio_venue_id, estadio_imagen, arbitro, arbitro_pais, equipo_local_id, equipo_visita_id, info_partido_corregida, equipo_local, equipo_visitante, goles_local_oficial, goles_visitante_oficial, resultado_oficial, equipos_local_visita_ultima_validacion';
   const fechaLimiteRevalidar = new Date(ahora);
   fechaLimiteRevalidar.setDate(fechaLimiteRevalidar.getDate() - DIAS_REVALIDAR_EQUIPOS);
+  // Competencias con riesgo real de local/visitante invertido (a pedido,
+  // bug operativo: agregar equipos_local_visita_ultima_validacion.is.null al
+  // OR de abajo SIN acotar por competencia infló el pool de candidatos con
+  // TODOS los partidos existentes — categoria/liga que sea— porque esa
+  // columna es nueva y quedó null en todos. Eso le comía el cupo de la
+  // corrida (MAX_PARTIDOS_POR_CORRIDA) a partidos de fin de semana que solo
+  // necesitaban CUOTA, dejándolos sin cuota corrida tras corrida. El bug de
+  // local/visitante invertido SOLO apareció hasta ahora en cruces de ida y
+  // vuelta de Copa Libertadores/Sudamericana (la sede rota entre ambas
+  // piernas es lo que confunde a la fuente de datos) — se acota la
+  // revalidación a esas dos competencias nada más, para no competir por
+  // cupo con partidos de liga regular que nunca tuvieron este problema.
+  const TEMAS_CON_RIESGO_INVERTIDO = ['Copa Libertadores', 'Copa Sudamericana'];
+  const temasInFilter = TEMAS_CON_RIESGO_INVERTIDO.map((t) => `"${t}"`).join(',');
 
   // Estadio + árbitro (a pedido, "Información del partido" en la app): se
   // traen JUNTO con las cuotas, en la misma corrida — mismo criterio que
@@ -102,7 +116,7 @@ async function rutaCuotas(req, res) {
     // ingresar los pronósticos con los equipos mal configurados". Si
     // API-Football tarda unos días en corregir un dato mal cargado, no
     // alcanza con chequear una sola vez y quedarse tranquilo.
-    .or(`cuota_local.is.null,cuotas_comparativa.is.null,cuota_refrescada_urgente.is.null,estadio.is.null,arbitro.is.null,estadio_capacidad.is.null,estadio_imagen.is.null,equipos_local_visita_ultima_validacion.is.null,equipos_local_visita_ultima_validacion.lt.${fechaLimiteRevalidar.toISOString()}`)
+    .or(`cuota_local.is.null,cuotas_comparativa.is.null,cuota_refrescada_urgente.is.null,estadio.is.null,arbitro.is.null,estadio_capacidad.is.null,estadio_imagen.is.null,and(tema.in.(${temasInFilter}),equipos_local_visita_ultima_validacion.is.null),and(tema.in.(${temasInFilter}),equipos_local_visita_ultima_validacion.lt.${fechaLimiteRevalidar.toISOString()})`)
     .gte('fecha_expiracion', ahora.toISOString())
     .lte('fecha_expiracion', limite.toISOString())
     // Los partidos que juegan más pronto primero (a pedido, junto con el
@@ -319,6 +333,7 @@ async function rutaCuotas(req, res) {
       // dato mal cargado, hay que seguir chequeando hasta que el partido
       // arranque, no conformarse con un solo chequeo temprano.
       const necesitaValidarEquipos = !partido.resultado_oficial
+        && TEMAS_CON_RIESGO_INVERTIDO.includes(partido.tema)
         && (!partido.equipos_local_visita_ultima_validacion || new Date(partido.equipos_local_visita_ultima_validacion) < fechaLimiteRevalidar);
       if (!partido.info_partido_corregida && (partido.estadio == null || partido.arbitro == null || partido.estadio_capacidad == null || partido.estadio_imagen == null || partido.estado_partido === 'TBD' || necesitaValidarEquipos)) {
         const info = await obtenerEstadoFixture(partido.fixture_id_api);
