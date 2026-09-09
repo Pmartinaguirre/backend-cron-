@@ -287,6 +287,16 @@ async function obtenerEstadoFixture(fixtureId) {
   // nueva, así que comparándola con la que tenemos guardada se puede
   // reprogramar el partido solo (ver /vivo).
   const fechaISO = fixture.fixture?.date || null;
+  // Nombres local/visita TAL CUAL los tiene HOY API-Football para este
+  // fixture puntual (a pedido, bug real: Fluminense-Platense y Palmeiras-LDU
+  // de Quito en Copa Libertadores quedaron guardados con local/visitante
+  // invertidos porque, al crear el partido, la API todavía no tenía bien
+  // asignada la sede/local de esa llave — y después lo corrigió de su lado
+  // sin que nuestra base se enterara). Se devuelven acá para que /cuotas
+  // pueda comparar contra lo guardado y auto-corregir si la API cambió de
+  // opinión, en vez de confiar para siempre en el dato del día de creación.
+  const equipoLocalApi = fixture.teams?.home?.name || null;
+  const equipoVisitaApi = fixture.teams?.away?.name || null;
   const golesLocal = fixture.goals?.home ?? null;
   // Tanda de penales (a pedido): API-Football la manda APARTE de "goals" —
   // "goals" siempre queda con el resultado de 90'+alargue (el que define
@@ -383,6 +393,8 @@ async function obtenerEstadoFixture(fixtureId) {
     minuto,
     minutoExtra,
     fechaISO,
+    equipoLocalApi,
+    equipoVisitaApi,
     golesLocal,
     golesVisita,
     goleadoresLocal,
