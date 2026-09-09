@@ -8,6 +8,7 @@ require('dotenv').config();
 const express = require('express');
 const { exigirSecreto } = require('./src/middlewareAuth');
 const { rutaCuotas } = require('./src/rutas/cuotas');
+const { rutaInfoPartido } = require('./src/rutas/infoPartido');
 const { rutaVivo } = require('./src/rutas/vivo');
 const { rutaResolver } = require('./src/rutas/resolver');
 const { rutaCrearPartidos } = require('./src/rutas/crearPartidos');
@@ -52,6 +53,14 @@ app.get('/', (req, res) => res.json({ ok: true, servicio: 'demaster-cron-backend
 
 app.get('/cuotas', exigirSecreto, rutaCuotas);
 app.post('/cuotas', exigirSecreto, rutaCuotas);
+
+// /info-partido: separado de /cuotas (a pedido de Pablo, para que estadio/
+// árbitro/validación de equipos nunca vuelvan a competir por cupo con la
+// cuota — ver comentario completo en src/rutas/infoPartido.js). Agregar
+// como cron job APARTE en cron-job.org, mismo secreto, misma frecuencia
+// sugerida (cada 10 min).
+app.get('/info-partido', exigirSecreto, rutaInfoPartido);
+app.post('/info-partido', exigirSecreto, rutaInfoPartido);
 
 app.get('/vivo', exigirSecreto, rutaVivo);
 app.post('/vivo', exigirSecreto, rutaVivo);
